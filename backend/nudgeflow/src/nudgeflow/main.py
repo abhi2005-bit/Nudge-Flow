@@ -1,8 +1,12 @@
+
 from fastapi import FastAPI
 
+from nudgeflow.config import settings
+
 app = FastAPI(
-    title="NudgeFlow API",
-    version="0.1.0",
+    title=settings.app_name,
+    version=settings.app_version,
+    debug=settings.debug,
 )
 
 
