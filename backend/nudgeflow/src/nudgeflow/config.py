@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: Literal["development", "testing", "production"] = "development"
     debug: bool = False
+    database_url: str = "postgresql+psycopg://postgres:change-me@localhost:5432/nudgeflow"
 
 
 settings = Settings()
