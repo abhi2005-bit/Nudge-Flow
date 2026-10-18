@@ -1,131 +1,94 @@
-
 import uuid
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
 
-from nudgeflow.database import engine, get_db
-from nudgeflow.main import app
-
-
-@pytest.fixture
-def client():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(
-        bind=connection,
-        join_transaction_mode="create_savepoint",
-    )
-
-    def override_get_db():
-        yield session
-
-    app.dependency_overrides[get_db] = override_get_db
-
-    try:
-        with TestClient(app) as test_client:
-            yield test_client
-    finally:
-        app.dependency_overrides.clear()
-        session.close()
-        transaction.rollback()
-        connection.close()
-
-
-def unique_phone_number():
+def phone() -> str:
     return f"+91{uuid.uuid4().int % 10**10:010d}"
 
 
-def test_get_contact_by_id(client):
-    phone_number = unique_phone_number()
-
-    create_response = client.post(
+def create_contact(client, name="Test Contact", phone_number=None):
+    return client.post(
         "/contacts",
+        json={"name": name, "phone_number": phone_number or phone()},
+    )
+
+
+def test_create_and_retrieve_contact(client):
+    created = create_contact(client, "  Asha Rao  ")
+    assert created.status_code == 201, created.text
+    result = client.get(f"/contacts/{created.json()['id']}")
+    assert result.status_code == 200
+    assert result.json()["name"] == "Asha Rao"
+
+
+def test_list_contacts(client):
+    create_contact(client, "One")
+    create_contact(client, "Two")
+    response = client.get("/contacts")
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()] == ["One", "Two"]
+
+
+def test_contact_list_pagination(client):
+    create_contact(client, "One")
+    create_contact(client, "Two")
+    assert len(client.get("/contacts?limit=1&offset=1").json()) == 1
+
+
+def test_partial_update_preserves_omitted_fields(client):
+    created = create_contact(client, "Before")
+    body = created.json()
+    updated = client.put(f"/contacts/{body['id']}", json={"name": "After"})
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "After"
+    assert updated.json()["phone_number"] == body["phone_number"]
+
+
+def test_missing_contact_returns_404(client):
+    assert client.get("/contacts/999999999").status_code == 404
+    assert client.put("/contacts/999999999", json={"name": "New"}).status_code == 404
+    assert client.delete("/contacts/999999999").status_code == 404
+
+
+def test_duplicate_phone_returns_409(client):
+    number = phone()
+    assert create_contact(client, "First", number).status_code == 201
+    duplicate = create_contact(client, "Second", number)
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "A contact with this phone number already exists."
+
+
+def test_contact_rejects_blank_fields(client):
+    for body in (
+        {"name": "   ", "phone_number": phone()},
+        {"name": "Valid", "phone_number": "  "},
+    ):
+        assert client.post("/contacts", json=body).status_code == 422
+
+
+def test_contact_update_rejects_empty_and_blank_fields(client):
+    created = create_contact(client)
+    contact_id = created.json()["id"]
+    assert client.put(f"/contacts/{contact_id}", json={}).status_code == 422
+    assert client.put(f"/contacts/{contact_id}", json={"name": "  "}).status_code == 422
+
+
+def test_delete_contact_cascades_follow_ups(client):
+    contact = create_contact(client).json()
+    from datetime import datetime, timedelta, timezone
+
+    follow_up = client.post(
+        "/follow-ups",
         json={
-            "name": "Get Contact Test",
-            "phone_number": phone_number,
+            "contact_id": contact["id"],
+            "title": "Call",
+            "due_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
         },
-    )
-    assert create_response.status_code == 201, create_response.text
-
-    contact_id = create_response.json()["id"]
-    response = client.get(f"/contacts/{contact_id}")
-
-    assert response.status_code == 200, response.text
-    assert response.json()["id"] == contact_id
-    assert response.json()["name"] == "Get Contact Test"
-    assert response.json()["phone_number"] == phone_number
-
-
-def test_get_contact_not_found(client):
-    response = client.get("/contacts/999999999")
-
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Contact not found."
-
-
-def test_update_contact_name(client):
-    phone_number = unique_phone_number()
-
-    create_response = client.post(
-        "/contacts",
-        json={
-            "name": "Original Name",
-            "phone_number": phone_number,
-        },
-    )
-    assert create_response.status_code == 201, create_response.text
-
-    contact_id = create_response.json()["id"]
-    response = client.put(
-        f"/contacts/{contact_id}",
-        json={"name": "Updated Name"},
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["name"] == "Updated Name"
-    assert response.json()["phone_number"] == phone_number
-
-
-def test_update_contact_not_found(client):
-    response = client.put(
-        "/contacts/999999999",
-        json={"name": "Updated Name"},
-    )
-
-    assert response.status_code == 404, response.text
-
-
-def test_update_contact_rejects_empty_body(client):
-    response = client.put("/contacts/1", json={})
-
-    assert response.status_code == 422
+    ).json()
+    assert client.delete(f"/contacts/{contact['id']}").status_code == 204
+    assert client.get(f"/follow-ups/{follow_up['id']}").status_code == 404
 
 
 def test_delete_contact(client):
-    phone_number = unique_phone_number()
-
-    create_response = client.post(
-        "/contacts",
-        json={
-            "name": "Contact To Delete",
-            "phone_number": phone_number,
-        },
-    )
-    assert create_response.status_code == 201
-
-    contact_id = create_response.json()["id"]
-    response = client.delete(f"/contacts/{contact_id}")
-
-    assert response.status_code == 204
-
-    get_response = client.get(f"/contacts/{contact_id}")
-    assert get_response.status_code == 404
-
-
-def test_delete_contact_not_found(client):
-    response = client.delete("/contacts/999999999")
-
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Contact not found."
+    contact = create_contact(client).json()
+    assert client.delete(f"/contacts/{contact['id']}").status_code == 204
+    assert client.get(f"/contacts/{contact['id']}").status_code == 404

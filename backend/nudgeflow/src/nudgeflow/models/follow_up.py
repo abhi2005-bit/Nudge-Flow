@@ -1,16 +1,23 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import CheckConstraint, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from nudgeflow.database import Base
+from nudgeflow.models.types import UTCDateTime
 
 
 class FollowUp(Base):
     """A follow-up task associated with a contact."""
 
     __tablename__ = "follow_ups"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'completed')",
+            name="ck_follow_ups_status",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
@@ -25,7 +32,7 @@ class FollowUp(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     due_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         nullable=False,
     )
 
@@ -37,7 +44,7 @@ class FollowUp(Base):
     )
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         server_default=func.now(),
         nullable=False,
     )

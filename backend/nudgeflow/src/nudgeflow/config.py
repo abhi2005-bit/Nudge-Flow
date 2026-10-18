@@ -1,6 +1,7 @@
 
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,7 +20,10 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     environment: Literal["development", "testing", "production"] = "development"
     debug: bool = False
-    database_url: str = "postgresql+psycopg://postgres:change-me@localhost:5432/nudgeflow"
+    database_url: str = "postgresql+psycopg://localhost:5432/nudgeflow"
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
+    )
 
 
 settings = Settings()

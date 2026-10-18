@@ -1,14 +1,7 @@
 
 from sqlalchemy import text
 
-from nudgeflow.database import engine
 
-
-def test_database_connection():
-    with engine.connect() as connection:
-        result = connection.execute(
-            text("SELECT current_database(), current_user")
-        ).one()
-
-    assert result.current_database == "nudgeflow"
-    assert result.current_user == "postgres"
+def test_database_connection(test_engine):
+    with test_engine.connect() as connection:
+        assert connection.execute(text("SELECT 1")).scalar_one() == 1

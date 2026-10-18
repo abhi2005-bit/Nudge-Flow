@@ -1,6 +1,8 @@
 
+from collections.abc import Iterator
+
 from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from nudgeflow.config import settings
 
@@ -22,7 +24,7 @@ class Base(DeclarativeBase):
     """Base class for NudgeFlow database models."""
 
 
-def get_db():
+def get_db() -> Iterator[Session]:
     """Provide a database session and always close it."""
     db = SessionLocal()
     try:

@@ -1,10 +1,11 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from nudgeflow.database import Base
+from nudgeflow.models.types import UTCDateTime
 
 
 class Contact(Base):
@@ -21,7 +22,7 @@ class Contact(Base):
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         server_default=func.now(),
         nullable=False,
     )
