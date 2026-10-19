@@ -1,0 +1,37 @@
+message,intent
+"Could you book a table for Friday evening?",booking_enquiry
+"Could you book a table for Friday evening please?",booking_enquiry
+"Please reserve a table for two tomorrow night.",booking_enquiry
+"Can I make a booking for a room next week?",booking_enquiry
+"I would like to schedule an appointment for Monday.",booking_enquiry
+"Can you arrange a reservation for Saturday?",booking_enquiry
+"How much does the blue plan cost?",purchase_enquiry
+"How much does the blue plan cost please?",purchase_enquiry
+"I want to buy the premium package.",purchase_enquiry
+"Can I order two replacement filters?",purchase_enquiry
+"Is this product available to purchase?",purchase_enquiry
+"Where can I place an order for the starter kit?",purchase_enquiry
+"Do you repair washing machines?",service_enquiry
+"Do you repair washing machines please?",service_enquiry
+"Can someone install my new air conditioner?",service_enquiry
+"What are your service hours this weekend?",service_enquiry
+"I need maintenance for my heating system.",service_enquiry
+"Can I schedule a technician visit?",service_enquiry
+"My recent order arrived damaged.",complaint_support
+"My recent order arrived damaged please help.",complaint_support
+"I cannot log in to my account.",complaint_support
+"The app keeps crashing when I open it.",complaint_support
+"I was charged twice for the same order.",complaint_support
+"My delivery has not arrived yet.",complaint_support
+"Please cancel my subscription.",cancellation
+"Please cancel my subscription today.",cancellation
+"I want to stop my monthly membership.",cancellation
+"How do I cancel my appointment?",cancellation
+"Cancel the order I placed this morning.",cancellation
+"Please end my service plan at renewal.",cancellation
+"Can you tell me about your company?",other_uncertain
+"Can you tell me a little about your company?",other_uncertain
+"What are your opening hours?",other_uncertain
+"Where are you located?",other_uncertain
+"Please call me back when you can.",other_uncertain
+"I am not sure what I need yet.",other_uncertain

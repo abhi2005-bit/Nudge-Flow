@@ -1,0 +1,20 @@
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Keep downloaded data and generated artifacts out of Git.
+data/*.csv
+!data/synthetic_dev.csv
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+reports/*
+!reports/README.md
+checkpoints/
+*.pt
+*.pth
+*.ckpt

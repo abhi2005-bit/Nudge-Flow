@@ -1,0 +1,23 @@
+[project]
+name = "nudgeflow-lead-intelligence"
+version = "0.1.0"
+description = "Customer-message intent classification workspace for NudgeFlow AI"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "numpy>=2.1",
+    "pandas>=2.2",
+    "scikit-learn>=1.6",
+    "torch>=2.6",
+    "transformers>=4.45",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "lead_intelligence"
