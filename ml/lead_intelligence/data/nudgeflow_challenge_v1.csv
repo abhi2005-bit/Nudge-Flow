@@ -1,0 +1,61 @@
+﻿message,intent
+Any chance there's a haircut slot after 5 tomorrow?,booking_enquiry
+I'm hoping to get seen at the clinic sometime next week.,booking_enquiry
+Could you shift my appointment to Thursday morning?,booking_enquiry
+Do you have room for two diners around half past seven?,booking_enquiry
+Book me in for the beginner session if there's still space.,booking_enquiry
+Could somebody pencil me in for a consultation?,booking_enquiry
+What's the soonest I could get a test drive?,booking_enquiry
+Need to set up a visit; afternoons are best.,booking_enquiry
+Is the 10:30 slot still free?,booking_enquiry
+Can we move our demo from Tuesday to Friday?,booking_enquiry
+Can I get this in black instead?,purchase_enquiry
+Is the annual option cheaper if I pay upfront?,purchase_enquiry
+Do you sell spare batteries on their own?,purchase_enquiry
+What would three of these cost altogether?,purchase_enquiry
+Is the basic package still available to buy?,purchase_enquiry
+I want one—how do I place an order?,purchase_enquiry
+Can I pay for the course online?,purchase_enquiry
+Any student discount on the monthly plan?,purchase_enquiry
+Do you stock USB-C adapters?,purchase_enquiry
+How much is a pack of replacement filters?,purchase_enquiry
+The tap is leaking; can you send someone to fix it?,service_enquiry
+Could your team install an EV charger?,service_enquiry
+Do you help small shops set up payroll software?,service_enquiry
+My laptop needs a battery replaced. Is that something you do?,service_enquiry
+Can you repair a scooter that won't start?,service_enquiry
+I need help moving our website to a new host. Do you offer that?,service_enquiry
+Do you provide a deep clean when someone moves out?,service_enquiry
+Do you fit child seats into cars?,service_enquiry
+Can someone tune my guitar?,service_enquiry
+Is account setup help included in your service?,service_enquiry
+I've waited three days and the tracking hasn't moved at all.,complaint_support
+You charged me twice for one purchase.,complaint_support
+The repair didn't fix it; it's making the same noise again.,complaint_support
+"I was told delivery was free, but there's a fee on my bill.",complaint_support
+The technician turned up two hours late.,complaint_support
+Your app keeps kicking me out when I sign in.,complaint_support
+The item arrived scratched even though it was sold as new.,complaint_support
+Still waiting on the refund you said was sent last week.,complaint_support
+Nobody has replied to my support ticket yet.,complaint_support
+My booking confirmation has the wrong date on it.,complaint_support
+"Don't renew my package when it expires, please.",cancellation
+I'm done with this service; close my account.,cancellation
+Could you call off today's pickup?,cancellation
+"I won't be attending now, so remove my registration.",cancellation
+Please stop next month's payment for this membership.,cancellation
+Cancel the reservation—I can't make it anymore.,cancellation
+I want to unsubscribe from the monthly deliveries.,cancellation
+Please void the order before it ships.,cancellation
+Can you end the contract at the end of this week?,cancellation
+Scratch that booking; I don't need it now.,cancellation
+hey u there?,other_uncertain
+Can someone point me in the right direction?,other_uncertain
+I need to ask something but not sure who handles it.,other_uncertain
+What time are you open on Sundays?,other_uncertain
+Where's your nearest branch?,other_uncertain
+Do you have a WhatsApp number I can message?,other_uncertain
+"Thanks, I'll get back to you later.",other_uncertain
+I've got a question about something on your website.,other_uncertain
+Who should I contact to talk through an idea?,other_uncertain
+"Good morning, just checking I've reached the right number.",other_uncertain

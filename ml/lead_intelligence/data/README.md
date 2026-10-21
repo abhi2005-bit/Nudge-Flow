@@ -1,19 +1,43 @@
-# Customer-message data
+﻿# NudgeFlow Intent Datasets
 
-## Labeled CSV format
+## 1. nudgeflow_intents_60k.csv
 
-Provide a UTF-8 CSV with exactly these headers:
+The main synthetic dataset for training the NudgeFlow customer intent
+classifier.
 
-```csv
-message,intent
-"Can you reserve a table for Friday?",booking_enquiry
-"How much does the starter plan cost?",purchase_enquiry
-```
+- Total messages: 60,000
+- Six intent classes
+- 10,000 messages per intent
+- CSV columns: `message`, `intent`
 
-Each row is one short customer message and one label. `message` and `intent` must be non-empty. Labels are case-sensitive canonical IDs from the taxonomy in the project README. The loader trims surrounding whitespace, rejects unknown labels and conflicting labels on normalized duplicate text, and preserves message text for later model work.
+The intent classes are:
 
-Put a real labeled dataset at `data/customer_messages.csv`; CSV files in `data/` are Git-ignored. Use only data you are permitted to use. Remove names, phone numbers, email addresses, account numbers, addresses, and other personal or sensitive information before placing data in this workspace. Record annotation guidance and provenance separately; do not add secrets or private CRM data to Git.
+- `booking_enquiry`
+- `purchase_enquiry`
+- `service_enquiry`
+- `complaint_support`
+- `cancellation`
+- `other_uncertain`
 
-## Synthetic development fixture
+The current training workflow uses a group-aware split with approximately
+60% training, 20% validation, and 20% test data.
 
-[`synthetic_dev.csv`](synthetic_dev.csv) contains only invented example messages for checking parsing, validation, duplicate grouping, splitting, and metric output structure. It is not collected from customers and must never be used to claim model quality or real-world performance. It is deliberately small and is not a training benchmark.
+## 2. nudgeflow_challenge_v1.csv
+
+A separate collection of 60 synthetic messages, with 10 examples for
+each intent. It is used to investigate how the model handles varied
+wording and difficult intent distinctions.
+
+This challenge set has already been used during development and should
+not be treated as an independent benchmark.
+
+## Important limitations
+
+These datasets are synthetic and include template-generated wording.
+They help develop and test the training pipeline but do not establish
+accuracy on real customer conversations.
+
+Before deploying the classifier, evaluate it on appropriately collected,
+representative customer messages and review any privacy requirements.
+
+Do not combine the challenge dataset with the training dataset.

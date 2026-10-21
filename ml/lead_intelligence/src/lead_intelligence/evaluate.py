@@ -1,4 +1,4 @@
-"""Evaluate the saved NudgeFlow intent classifier."""
+"""Evaluate the NudgeFlow intent classifier on the validation set."""
 
 from pathlib import Path
 
@@ -13,74 +13,151 @@ from lead_intelligence.taxonomy import INTENTS
 from lead_intelligence.tokenization import load_tokenizer
 
 
-# 1. Select the device.
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("Device:", device)
+# File paths
+DATA_PATH = Path("data/nudgeflow_intents_60k.csv")
+MODEL_DIR = Path("models/intent_classifier_60k")
 
-# 2. Load the data and recreate the same split.
-frame = read_labeled_messages(Path("data/synthetic_dev.csv"))
-splits = create_train_validation_test_split(frame)
+# Evaluation settings
+BATCH_SIZE = 4
+MAX_ERRORS_TO_PRINT = 20
 
-test_frame = frame.iloc[splits["train"]].reset_index(drop=True)
-print("Test examples:", len(test_frame))
 
-# 3. Load the saved model and tokenizer.
-model_dir = Path("models/intent_classifier")
+def main():
+    # 1. Select GPU if available; otherwise, use CPU.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Device:", device)
 
-tokenizer = load_tokenizer(str(model_dir))
-model = create_model(str(model_dir)).to(device)
-model.eval()
+    # 2. Load the dataset and recreate the same splits used during training.
+    print("Loading dataset...")
 
-# 4. Prepare the test messages.
-test_dataset = IntentDataset(test_frame)
+    frame = read_labeled_messages(DATA_PATH)
+    splits = create_train_validation_test_split(frame)
 
-test_loader = DataLoader(
-    test_dataset,
-    batch_size=4,
-    shuffle=False,
-    collate_fn=create_collate_fn(tokenizer),
-)
+    test_frame = frame.iloc[
+        splits["test"]
+    ].reset_index(drop=True)
 
-# 5. Predict intents without training the model.
-actual_ids = []
-predicted_ids = []
+    if test_frame.empty:
+        raise ValueError("The test dataset must not be empty.")
 
-with torch.no_grad():
-    for batch in test_loader:
-        inputs = {
-            key: batch[key].to(device)
-            for key in ("input_ids", "attention_mask")
-        }
+    print("Test examples:", len(test_frame))
 
-        outputs = model(**inputs)
-        predictions = outputs.logits.argmax(dim=1)
+    # 3. Load the newly trained model and its tokenizer.
+    if not MODEL_DIR.exists():
+        raise FileNotFoundError(
+            f"Trained model not found: {MODEL_DIR.resolve()}"
+        )
 
-        actual_ids.extend(batch["labels"].tolist())
-        predicted_ids.extend(predictions.cpu().tolist())
+    print("Loading trained model...")
 
-# 6. Compare predictions with the correct labels.
-correct = sum(
-    actual == predicted
-    for actual, predicted in zip(actual_ids, predicted_ids)
-)
+    tokenizer = load_tokenizer(str(MODEL_DIR))
+    model = create_model(str(MODEL_DIR)).to(device)
+    model.eval()
 
-accuracy = correct / len(actual_ids)
+    # 4. Prepare batches of test messages.
+    test_dataset = IntentDataset(test_frame)
 
-print(f"\nCorrect predictions: {correct}/{len(actual_ids)}")
-print(f"Test accuracy: {accuracy:.2%}")
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        collate_fn=create_collate_fn(tokenizer),
+    )
 
-print("\nIndividual predictions:")
+    # 5. Predict intents without updating model weights.
+    actual_ids = []
+    predicted_ids = []
 
-for message, actual_id, predicted_id in zip(
-    test_frame["message"],
-    actual_ids,
-    predicted_ids,
-):
-    actual_intent = INTENTS[actual_id]
-    predicted_intent = INTENTS[predicted_id]
+    print("Evaluating model...")
 
-    status = "CORRECT" if actual_id == predicted_id else "INCORRECT"
+    with torch.no_grad():
+        for batch in test_loader:
+            inputs = {
+                key: batch[key].to(device)
+                for key in ("input_ids", "attention_mask")
+            }
 
-    print(f"\nMessage: {message}")
-    print(f"Actual: {actual_intent}")
-    print(f"Predicted: {predicted_intent} — {status}")
+            outputs = model(**inputs)
+            predictions = outputs.logits.argmax(dim=1)
+
+            actual_ids.extend(batch["labels"].tolist())
+            predicted_ids.extend(predictions.cpu().tolist())
+
+    # 6. Calculate overall accuracy.
+    correct = sum(
+        actual == predicted
+        for actual, predicted in zip(actual_ids, predicted_ids)
+    )
+
+    total = len(actual_ids)
+    accuracy = correct / total if total else 0.0
+
+    print("\n========== TEST RESULTS ==========")
+    print(f"Correct predictions: {correct}/{total}")
+    print(f"Incorrect predictions: {total - correct}/{total}")
+    print(f"Test accuracy: {accuracy:.2%}")
+
+    # 7. Calculate accuracy for each intent.
+    print("\n========== ACCURACY BY INTENT ==========")
+
+    for intent_id, intent in enumerate(INTENTS):
+        indices = [
+            i
+            for i, actual in enumerate(actual_ids)
+            if actual == intent_id
+        ]
+
+        intent_correct = sum(
+            predicted_ids[i] == intent_id
+            for i in indices
+        )
+
+        intent_total = len(indices)
+        intent_accuracy = (
+            intent_correct / intent_total
+            if intent_total
+            else 0.0
+        )
+
+        print(
+            f"{intent}: {intent_correct}/{intent_total} "
+            f"({intent_accuracy:.2%})"
+        )
+
+    # 8. Display a limited number of incorrect predictions.
+    print("\n========== INCORRECT PREDICTIONS ==========")
+
+    errors = 0
+
+    for i, (actual, predicted) in enumerate(
+        zip(actual_ids, predicted_ids)
+    ):
+        if actual == predicted:
+            continue
+
+        if errors >= MAX_ERRORS_TO_PRINT:
+            break
+
+        message = test_frame.iloc[i]["message"]
+
+        print(f"\nMessage: {message}")
+        print(f"Actual: {INTENTS[actual]}")
+        print(f"Predicted: {INTENTS[predicted]}")
+
+        errors += 1
+
+    if errors == 0:
+        print("No incorrect predictions!")
+
+    total_errors = total - correct
+
+    if total_errors > errors:
+        print(
+            f"\nShowing {errors} of {total_errors} incorrect predictions."
+        )
+
+    print("\nEvaluation complete.")
+
+
+if __name__ == "__main__":
+    main()

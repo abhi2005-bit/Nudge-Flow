@@ -18,3 +18,7 @@ checkpoints/
 *.pt
 *.pth
 *.ckpt
+
+# Track datasets required to reproduce the intent-classification experiments.
+!data/nudgeflow_intents_60k.csv
+!data/nudgeflow_challenge_v1.csv
