@@ -1,7 +1,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, ForeignKey, String, Text, func
+from sqlalchemy import CheckConstraint, ForeignKey, ForeignKeyConstraint, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from nudgeflow.database import Base
@@ -17,12 +17,24 @@ class FollowUp(Base):
             "status IN ('pending', 'completed')",
             name="ck_follow_ups_status",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "contact_id"],
+            ["contacts.tenant_id", "contacts.id"],
+            name="fk_follow_ups_tenant_contact",
+            ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
     contact_id: Mapped[int] = mapped_column(
         ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )

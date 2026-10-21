@@ -8,6 +8,7 @@ from nudgeflow.security import DUMMY_PASSWORD_HASH, verify_password
 from nudgeflow.tokens import TokenConfigurationError, create_access_token
 
 from nudgeflow.database import get_db
+from nudgeflow.models.tenant import Tenant
 from nudgeflow.models.user import User
 from nudgeflow.schemas.user import UserCreate, UserResponse
 from nudgeflow.security import hash_password
@@ -43,14 +44,19 @@ def register_user(
             detail="An account with this email already exists.",
         )
 
-    user = User(
-        email=user_data.email,
-        hashed_password=hash_password(user_data.password),
-    )
-
-    db.add(user)
+    # Tenant creation and the initial owner membership share one transaction.
+    tenant = Tenant(name=user_data.business_name)
+    db.add(tenant)
 
     try:
+        db.flush()
+        user = User(
+            email=user_data.email,
+            hashed_password=hash_password(user_data.password),
+            tenant_id=tenant.id,
+            tenant_role="owner",
+        )
+        db.add(user)
         db.commit()
         db.refresh(user)
     except IntegrityError as exc:

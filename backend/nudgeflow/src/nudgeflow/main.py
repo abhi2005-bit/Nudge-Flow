@@ -38,10 +38,14 @@ def is_phone_number_conflict(exc: IntegrityError) -> bool:
     """Recognize only the phone uniqueness violation across supported drivers."""
     original = exc.orig
     constraint = getattr(getattr(original, "diag", None), "constraint_name", None)
-    if constraint == "ix_contacts_phone_number":
+    if constraint in {"ix_contacts_phone_number", "uq_contacts_tenant_phone"}:
         return True
     message = str(original).lower()
-    return "contacts.phone_number" in message or "ix_contacts_phone_number" in message
+    return (
+        "contacts.phone_number" in message
+        or "ix_contacts_phone_number" in message
+        or "uq_contacts_tenant_phone" in message
+    )
 
 
 def commit_changes(db: Session) -> None:
@@ -68,23 +72,31 @@ def save_contact(db: Session, contact: Contact) -> Contact:
     return contact
 
 
-def get_owned_contact(db: Session, contact_id: int, owner_id: int) -> Contact | None:
+def get_tenant_contact(db: Session, contact_id: int, tenant_id: int) -> Contact | None:
     statement = select(Contact).where(
         Contact.id == contact_id,
-        Contact.owner_id == owner_id,
+        Contact.tenant_id == tenant_id,
     )
     return db.scalar(statement)
 
 
-def get_owned_follow_up(
+def get_tenant_follow_up(
     db: Session,
     follow_up_id: int,
-    owner_id: int,
+    tenant_id: int,
 ) -> FollowUp | None:
     statement = (
         select(FollowUp)
-        .join(Contact, Contact.id == FollowUp.contact_id)
-        .where(FollowUp.id == follow_up_id, Contact.owner_id == owner_id)
+        .join(
+            Contact,
+            (Contact.id == FollowUp.contact_id)
+            & (Contact.tenant_id == FollowUp.tenant_id),
+        )
+        .where(
+            FollowUp.id == follow_up_id,
+            FollowUp.tenant_id == tenant_id,
+            Contact.tenant_id == tenant_id,
+        )
     )
     return db.scalar(statement)
 
@@ -107,7 +119,11 @@ def create_contact(
 ) -> Contact:
     return save_contact(
         db,
-        Contact(**contact_data.model_dump(), owner_id=current_user.id),
+        Contact(
+            **contact_data.model_dump(),
+            owner_id=current_user.id,
+            tenant_id=current_user.tenant_id,
+        ),
     )
 
 
@@ -120,7 +136,7 @@ def list_contacts(
 ) -> list[Contact]:
     statement = (
         select(Contact)
-        .where(Contact.owner_id == current_user.id)
+        .where(Contact.tenant_id == current_user.tenant_id)
         .order_by(Contact.id)
         .offset(offset)
         .limit(limit)
@@ -134,7 +150,7 @@ def get_contact(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Contact:
-    contact = get_owned_contact(db, contact_id, current_user.id)
+    contact = get_tenant_contact(db, contact_id, current_user.tenant_id)
     if contact is None:
         raise HTTPException(status_code=404, detail="Contact not found.")
     return contact
@@ -147,7 +163,7 @@ def update_contact(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Contact:
-    contact = get_owned_contact(db, contact_id, current_user.id)
+    contact = get_tenant_contact(db, contact_id, current_user.tenant_id)
     if contact is None:
         raise HTTPException(status_code=404, detail="Contact not found.")
     updates = contact_data.model_dump(exclude_unset=True)
@@ -164,7 +180,7 @@ def delete_contact(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> None:
-    contact = get_owned_contact(db, contact_id, current_user.id)
+    contact = get_tenant_contact(db, contact_id, current_user.tenant_id)
     if contact is None:
         raise HTTPException(status_code=404, detail="Contact not found.")
     db.delete(contact)
@@ -180,12 +196,15 @@ def create_follow_up(
     contact = db.scalar(
         select(Contact.id).where(
             Contact.id == follow_up_data.contact_id,
-            Contact.owner_id == current_user.id,
+            Contact.tenant_id == current_user.tenant_id,
         )
     )
     if contact is None:
         raise HTTPException(status_code=404, detail="Contact not found.")
-    follow_up = FollowUp(**follow_up_data.model_dump())
+    follow_up = FollowUp(
+        **follow_up_data.model_dump(),
+        tenant_id=current_user.tenant_id,
+    )
     db.add(follow_up)
     commit_changes(db)
     db.refresh(follow_up)
@@ -201,8 +220,15 @@ def list_follow_ups(
 ) -> list[FollowUp]:
     statement = (
         select(FollowUp)
-        .join(Contact, Contact.id == FollowUp.contact_id)
-        .where(Contact.owner_id == current_user.id)
+        .join(
+            Contact,
+            (Contact.id == FollowUp.contact_id)
+            & (Contact.tenant_id == FollowUp.tenant_id),
+        )
+        .where(
+            FollowUp.tenant_id == current_user.tenant_id,
+            Contact.tenant_id == current_user.tenant_id,
+        )
         .order_by(FollowUp.due_at, FollowUp.id)
     )
     return list(db.scalars(statement.offset(offset).limit(limit)).all())
@@ -214,7 +240,7 @@ def get_follow_up(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> FollowUp:
-    follow_up = get_owned_follow_up(db, follow_up_id, current_user.id)
+    follow_up = get_tenant_follow_up(db, follow_up_id, current_user.tenant_id)
     if follow_up is None:
         raise HTTPException(status_code=404, detail="Follow-up not found.")
     return follow_up
@@ -227,7 +253,7 @@ def update_follow_up(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> FollowUp:
-    follow_up = get_owned_follow_up(db, follow_up_id, current_user.id)
+    follow_up = get_tenant_follow_up(db, follow_up_id, current_user.tenant_id)
     if follow_up is None:
         raise HTTPException(status_code=404, detail="Follow-up not found.")
     updates = follow_up_data.model_dump(exclude_unset=True)
@@ -246,7 +272,7 @@ def delete_follow_up(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> None:
-    follow_up = get_owned_follow_up(db, follow_up_id, current_user.id)
+    follow_up = get_tenant_follow_up(db, follow_up_id, current_user.tenant_id)
     if follow_up is None:
         raise HTTPException(status_code=404, detail="Follow-up not found.")
     db.delete(follow_up)

@@ -4,11 +4,12 @@ NudgeFlow AI is a WhatsApp-first CRM for small businesses and service providers.
 
 ## Current capabilities
 
-- Contact create, list, retrieve, update, and delete.
+- Contact create, list, retrieve, update, and delete within a business workspace.
 - Follow-up create, list, retrieve, partial update, and delete, including `pending` and `completed` status.
 - PostgreSQL persistence through SQLAlchemy and versioned Alembic migrations.
 - Email/password registration and login using Argon2 password hashes and signed JWT access tokens.
-- Bearer authentication and per-user ownership isolation for contact and follow-up routes.
+- Bearer authentication and tenant isolation for contact and follow-up routes.
+- A business workspace created transactionally with each registration; contacts and follow-ups are scoped to the authenticated user's workspace.
 - OpenAPI documentation at `/docs` and a basic `/health` endpoint.
 
 ## Layout
@@ -69,9 +70,9 @@ All list endpoints support `limit` (default 100, range 1–500) and `offset` (de
 | Method | Path | Behavior |
 | --- | --- | --- |
 | GET | `/health` | Basic process health check |
-| POST | `/auth/register` | Register with a valid email and password (201) |
+| POST | `/auth/register` | Register with a valid email and password; optional `business_name` creates the initial workspace (201) |
 | POST | `/auth/login` | Verify credentials and return a bearer access token |
-| POST | `/contacts` | Create a contact (201; duplicate phone is 409) |
+| POST | `/contacts` | Create a contact in the authenticated workspace (201; duplicate phone within that workspace is 409) |
 | GET | `/contacts` | List contacts |
 | GET | `/contacts/{contact_id}` | Retrieve a contact (404 if missing) |
 | PUT | `/contacts/{contact_id}` | Update supplied contact fields; empty body is 422 |
@@ -101,9 +102,9 @@ Example follow-up request (timestamps must include a timezone):
 
 Follow-up responses include `id`, `contact_id`, `title`, `notes`, `due_at`, `status`, and `created_at`. Status is currently `pending` or `completed`.
 
-Every `/contacts` and `/follow-ups` request requires `Authorization: Bearer <access_token>`. `/auth/register`, `/auth/login`, and `/health` are public. Contact and follow-up reads and writes are scoped to the authenticated user; follow-up ownership is inherited from its contact. Requests for another user's record return 404 to avoid disclosing whether that record exists.
+Every `/contacts` and `/follow-ups` request requires `Authorization: Bearer <access_token>`. `/auth/register`, `/auth/login`, and `/health` are public. Registration creates a business workspace and an `owner` membership in one database transaction. The optional `business_name` field defaults to `My business`. Tenant identity is taken from the authenticated user record loaded by the server; request bodies do not choose a tenant. Contacts and follow-ups are scoped to that tenant, and follow-ups must reference a contact in the same tenant. Requests for another tenant's record return 404 to avoid disclosing whether that record exists. A future invitation flow may add `member` users to an existing tenant; no invitation endpoint exists yet.
 
-The ownership migration adds a nullable `contacts.owner_id`. Existing contact and follow-up rows remain intact and unassigned, and authenticated list/detail endpoints do not expose unassigned rows. They require an explicit owner assignment before becoming available in the CRM. Do not backfill them automatically: choose whether to assign those legacy records to a specific account or leave/archive them before performing a data backfill.
+The tenant migration creates one workspace for each existing user and maps contacts with a known `owner_id` to that user's workspace. Ownerless legacy contacts are retained in an isolated `Unassigned legacy records (quarantined)` workspace with no users; their follow-ups inherit the same tenant. They are not visible to authenticated users. An operator must review and explicitly map quarantined records to the correct business before any user is added to that workspace. No records are deleted or assigned to the first user. The migration can be downgraded while restoring the prior globally-unique phone constraint; downgrade stops before schema changes if the same phone number exists in multiple tenants.
 
 ## Frontend integration
 
@@ -117,10 +118,20 @@ uv run pytest -v
 
 The API tests use isolated in-memory SQLite databases with foreign-key enforcement. They do not require or modify a PostgreSQL database. PostgreSQL connectivity and migration execution should be checked separately against a configured development database.
 
+The tenant migration has an opt-in PostgreSQL integration test at `tests/test_tenant_migration_postgres.py`. It requires `NUDGEFLOW_MIGRATION_TEST_URL` to point to an **empty disposable loopback PostgreSQL database** whose name starts with `nudgeflow_test_`; the test refuses remote, non-PostgreSQL, incorrectly named, or non-empty databases. Set `NUDGEFLOW_DATABASE_URL` to that same test URL before running it. The test upgrades from empty, downgrades only the tenant revision, seeds pre-tenant rows, then upgrades and checks the backfill/quarantine policy. Never point this test at a development or production database.
+
+Example for a separately created, disposable local test database:
+
+```powershell
+$env:NUDGEFLOW_DATABASE_URL = "postgresql+psycopg://postgres@127.0.0.1:5432/nudgeflow_test_tenant"
+$env:NUDGEFLOW_MIGRATION_TEST_URL = $env:NUDGEFLOW_DATABASE_URL
+uv run --no-sync python -m pytest -q tests/test_tenant_migration_postgres.py
+```
+
 ## Limitations and next steps
 
 - `/health` reports that the API process is responding; it does not currently check PostgreSQL readiness.
-- Authentication currently uses short-lived bearer tokens without refresh or revocation, organization membership, or role-based access control.
+- Authentication currently uses short-lived bearer tokens without refresh or revocation. Tenant roles are stored, but there is no invitation/member-management flow or role-based authorization policy yet.
 - WhatsApp Cloud API, LLMs, agent workflows, and background processing are not implemented.
 
 ## Future AI architecture

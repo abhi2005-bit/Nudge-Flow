@@ -4,7 +4,10 @@ from datetime import UTC, datetime, timedelta
 import jwt
 
 from nudgeflow.config import settings
+from nudgeflow.models.tenant import Tenant
+from nudgeflow.models.user import User
 from nudgeflow.tokens import ALGORITHM
+from sqlalchemy import func, select
 
 
 def test_register_user_success(anonymous_client):
@@ -24,6 +27,43 @@ def test_register_user_success(anonymous_client):
     assert "created_at" in data
     assert "password" not in data
     assert "hashed_password" not in data
+
+
+def test_registration_creates_business_workspace_and_owner_membership(
+    anonymous_client, db_session
+):
+    response = anonymous_client.post(
+        "/auth/register",
+        json={
+            "email": "workspace@example.com",
+            "password": "Example-Password-123!",
+            "business_name": "  Asha's Studio  ",
+        },
+    )
+
+    assert response.status_code == 201
+    user = db_session.scalar(
+        select(User).where(User.email == "workspace@example.com")
+    )
+    assert user is not None
+    tenant = db_session.get(Tenant, user.tenant_id)
+    assert tenant is not None
+    assert tenant.name == "Asha's Studio"
+    assert user.tenant_role == "owner"
+    assert db_session.scalar(select(func.count(Tenant.id))) == 1
+
+
+def test_registration_rejects_blank_business_name(anonymous_client):
+    response = anonymous_client.post(
+        "/auth/register",
+        json={
+            "email": "workspace@example.com",
+            "password": "Example-Password-123!",
+            "business_name": "   ",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_register_user_duplicate_email(anonymous_client):

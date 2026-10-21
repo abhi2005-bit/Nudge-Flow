@@ -12,6 +12,7 @@ def test_contact_has_expected_columns():
     expected_columns = {
         "id",
         "owner_id",
+        "tenant_id",
         "name",
         "phone_number",
         "created_at",
@@ -35,9 +36,15 @@ def test_contact_required_fields():
 
 
 def test_contact_phone_number_is_unique():
-    phone_column = Contact.__table__.columns["phone_number"]
-
-    assert phone_column.unique is True
+    constraint = next(
+        constraint
+        for constraint in Contact.__table__.constraints
+        if constraint.name == "uq_contacts_tenant_phone"
+    )
+    assert {column.name for column in constraint.columns} == {
+        "tenant_id",
+        "phone_number",
+    }
 
 
 def test_contact_owner_is_optional_foreign_key_to_users():
@@ -46,6 +53,13 @@ def test_contact_owner_is_optional_foreign_key_to_users():
     foreign_key = next(iter(owner_column.foreign_keys))
     assert foreign_key.target_fullname == "users.id"
     assert foreign_key.ondelete == "SET NULL"
+
+
+def test_contact_tenant_is_required_foreign_key_to_tenants():
+    tenant_column = Contact.__table__.columns["tenant_id"]
+    assert tenant_column.nullable is False
+    foreign_key = next(iter(tenant_column.foreign_keys))
+    assert foreign_key.target_fullname == "tenants.id"
 
 
 def test_contact_created_at_has_server_default():
