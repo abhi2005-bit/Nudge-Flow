@@ -1,7 +1,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import String, func
+from sqlalchemy import ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from nudgeflow.database import Base
@@ -14,6 +14,11 @@ class Contact(Base):
     __tablename__ = "contacts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     phone_number: Mapped[str] = mapped_column(
         String(30),

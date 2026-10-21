@@ -3,11 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+from nudgeflow.routers.auth import router as auth_router
 
 from nudgeflow.config import settings
 from nudgeflow.database import get_db
+from nudgeflow.dependencies import get_current_user
 from nudgeflow.models.contact import Contact
 from nudgeflow.models.follow_up import FollowUp
+from nudgeflow.models.user import User
 from nudgeflow.schemas.contact import ContactCreate, ContactResponse, ContactUpdate
 from nudgeflow.schemas.follow_up import (
     FollowUpCreate,
@@ -20,6 +23,8 @@ app = FastAPI(
     version=settings.app_version,
     debug=settings.debug,
 )
+app.include_router(auth_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -63,6 +68,27 @@ def save_contact(db: Session, contact: Contact) -> Contact:
     return contact
 
 
+def get_owned_contact(db: Session, contact_id: int, owner_id: int) -> Contact | None:
+    statement = select(Contact).where(
+        Contact.id == contact_id,
+        Contact.owner_id == owner_id,
+    )
+    return db.scalar(statement)
+
+
+def get_owned_follow_up(
+    db: Session,
+    follow_up_id: int,
+    owner_id: int,
+) -> FollowUp | None:
+    statement = (
+        select(FollowUp)
+        .join(Contact, Contact.id == FollowUp.contact_id)
+        .where(FollowUp.id == follow_up_id, Contact.owner_id == owner_id)
+    )
+    return db.scalar(statement)
+
+
 @app.get("/")
 def root() -> dict[str, str]:
     return {"message": "Welcome to NudgeFlow!"}
@@ -74,23 +100,41 @@ def health_check() -> dict[str, str]:
 
 
 @app.post("/contacts", response_model=ContactResponse, status_code=201)
-def create_contact(contact_data: ContactCreate, db: Session = Depends(get_db)) -> Contact:
-    return save_contact(db, Contact(**contact_data.model_dump()))
+def create_contact(
+    contact_data: ContactCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Contact:
+    return save_contact(
+        db,
+        Contact(**contact_data.model_dump(), owner_id=current_user.id),
+    )
 
 
 @app.get("/contacts", response_model=list[ContactResponse])
 def list_contacts(
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> list[Contact]:
-    statement = select(Contact).order_by(Contact.id).offset(offset).limit(limit)
+    statement = (
+        select(Contact)
+        .where(Contact.owner_id == current_user.id)
+        .order_by(Contact.id)
+        .offset(offset)
+        .limit(limit)
+    )
     return list(db.scalars(statement).all())
 
 
 @app.get("/contacts/{contact_id}", response_model=ContactResponse)
-def get_contact(contact_id: int, db: Session = Depends(get_db)) -> Contact:
-    contact = db.get(Contact, contact_id)
+def get_contact(
+    contact_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Contact:
+    contact = get_owned_contact(db, contact_id, current_user.id)
     if contact is None:
         raise HTTPException(status_code=404, detail="Contact not found.")
     return contact
@@ -101,8 +145,9 @@ def update_contact(
     contact_id: int,
     contact_data: ContactUpdate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Contact:
-    contact = db.get(Contact, contact_id)
+    contact = get_owned_contact(db, contact_id, current_user.id)
     if contact is None:
         raise HTTPException(status_code=404, detail="Contact not found.")
     updates = contact_data.model_dump(exclude_unset=True)
@@ -114,8 +159,12 @@ def update_contact(
 
 
 @app.delete("/contacts/{contact_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_contact(contact_id: int, db: Session = Depends(get_db)) -> None:
-    contact = db.get(Contact, contact_id)
+def delete_contact(
+    contact_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    contact = get_owned_contact(db, contact_id, current_user.id)
     if contact is None:
         raise HTTPException(status_code=404, detail="Contact not found.")
     db.delete(contact)
@@ -126,8 +175,15 @@ def delete_contact(contact_id: int, db: Session = Depends(get_db)) -> None:
 def create_follow_up(
     follow_up_data: FollowUpCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> FollowUp:
-    if db.get(Contact, follow_up_data.contact_id) is None:
+    contact = db.scalar(
+        select(Contact.id).where(
+            Contact.id == follow_up_data.contact_id,
+            Contact.owner_id == current_user.id,
+        )
+    )
+    if contact is None:
         raise HTTPException(status_code=404, detail="Contact not found.")
     follow_up = FollowUp(**follow_up_data.model_dump())
     db.add(follow_up)
@@ -139,16 +195,26 @@ def create_follow_up(
 @app.get("/follow-ups", response_model=list[FollowUpResponse])
 def list_follow_ups(
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> list[FollowUp]:
-    statement = select(FollowUp).order_by(FollowUp.due_at, FollowUp.id)
+    statement = (
+        select(FollowUp)
+        .join(Contact, Contact.id == FollowUp.contact_id)
+        .where(Contact.owner_id == current_user.id)
+        .order_by(FollowUp.due_at, FollowUp.id)
+    )
     return list(db.scalars(statement.offset(offset).limit(limit)).all())
 
 
 @app.get("/follow-ups/{follow_up_id}", response_model=FollowUpResponse)
-def get_follow_up(follow_up_id: int, db: Session = Depends(get_db)) -> FollowUp:
-    follow_up = db.get(FollowUp, follow_up_id)
+def get_follow_up(
+    follow_up_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> FollowUp:
+    follow_up = get_owned_follow_up(db, follow_up_id, current_user.id)
     if follow_up is None:
         raise HTTPException(status_code=404, detail="Follow-up not found.")
     return follow_up
@@ -159,8 +225,9 @@ def update_follow_up(
     follow_up_id: int,
     follow_up_data: FollowUpUpdate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> FollowUp:
-    follow_up = db.get(FollowUp, follow_up_id)
+    follow_up = get_owned_follow_up(db, follow_up_id, current_user.id)
     if follow_up is None:
         raise HTTPException(status_code=404, detail="Follow-up not found.")
     updates = follow_up_data.model_dump(exclude_unset=True)
@@ -174,8 +241,12 @@ def update_follow_up(
 
 
 @app.delete("/follow-ups/{follow_up_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_follow_up(follow_up_id: int, db: Session = Depends(get_db)) -> None:
-    follow_up = db.get(FollowUp, follow_up_id)
+def delete_follow_up(
+    follow_up_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    follow_up = get_owned_follow_up(db, follow_up_id, current_user.id)
     if follow_up is None:
         raise HTTPException(status_code=404, detail="Follow-up not found.")
     db.delete(follow_up)

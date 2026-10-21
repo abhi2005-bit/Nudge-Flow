@@ -11,6 +11,7 @@ def test_contact_uses_contacts_table():
 def test_contact_has_expected_columns():
     expected_columns = {
         "id",
+        "owner_id",
         "name",
         "phone_number",
         "created_at",
@@ -37,6 +38,14 @@ def test_contact_phone_number_is_unique():
     phone_column = Contact.__table__.columns["phone_number"]
 
     assert phone_column.unique is True
+
+
+def test_contact_owner_is_optional_foreign_key_to_users():
+    owner_column = Contact.__table__.columns["owner_id"]
+    assert owner_column.nullable is True
+    foreign_key = next(iter(owner_column.foreign_keys))
+    assert foreign_key.target_fullname == "users.id"
+    assert foreign_key.ondelete == "SET NULL"
 
 
 def test_contact_created_at_has_server_default():

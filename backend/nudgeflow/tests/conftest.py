@@ -1,12 +1,23 @@
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from nudgeflow.database import Base, get_db
+from nudgeflow.config import settings
 from nudgeflow.main import app
 from nudgeflow.models import Contact, FollowUp  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def test_jwt_secret(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "jwt_secret_key",
+        SecretStr("local-test-secret-that-is-at-least-32-characters"),
+    )
 
 
 @pytest.fixture
@@ -32,13 +43,22 @@ def test_engine():
 
 
 @pytest.fixture
-def client(test_engine):
+def db_session(test_engine):
     connection = test_engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection, join_transaction_mode="create_savepoint")
-
-    def override_get_db():
+    try:
         yield session
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+@pytest.fixture
+def anonymous_client(db_session):
+    def override_get_db():
+        yield db_session
 
     previous_override = app.dependency_overrides.get(get_db)
     app.dependency_overrides[get_db] = override_get_db
@@ -50,6 +70,21 @@ def client(test_engine):
             app.dependency_overrides.pop(get_db, None)
         else:
             app.dependency_overrides[get_db] = previous_override
-        session.close()
-        transaction.rollback()
-        connection.close()
+
+
+@pytest.fixture
+def client(anonymous_client):
+    registration = anonymous_client.post(
+        "/auth/register",
+        json={"email": "owner@example.com", "password": "Test-password-123!"},
+    )
+    assert registration.status_code == 201, registration.text
+    login = anonymous_client.post(
+        "/auth/login",
+        json={"email": "owner@example.com", "password": "Test-password-123!"},
+    )
+    assert login.status_code == 200, login.text
+    anonymous_client.headers.update(
+        {"Authorization": f"Bearer {login.json()['access_token']}"}
+    )
+    return anonymous_client

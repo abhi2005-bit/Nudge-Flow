@@ -22,3 +22,6 @@ build/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Generated ML model artifacts
+/ml/lead_intelligence/models/

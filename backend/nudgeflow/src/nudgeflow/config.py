@@ -1,7 +1,7 @@
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +24,21 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
+    jwt_secret_key: SecretStr = SecretStr("")
+    access_token_expire_minutes: int = Field(default=30, gt=0, le=1440)
 
+    @model_validator(mode="after")
+    def validate_production_security(self) -> "Settings":
+        if self.environment == "production":
+            secret = self.jwt_secret_key.get_secret_value()
+            if len(secret) < 32 or secret.lower().startswith(("replace-", "change-me")):
+                raise ValueError(
+                    "NUDGEFLOW_JWT_SECRET_KEY must contain at least 32 characters in production."
+                )
+            if self.debug:
+                raise ValueError("NUDGEFLOW_DEBUG must be false in production.")
+        if "*" in self.cors_origins:
+            raise ValueError("NUDGEFLOW_CORS_ORIGINS must not contain a wildcard.")
+        return self
 
 settings = Settings()

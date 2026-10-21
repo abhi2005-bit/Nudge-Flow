@@ -1,6 +1,7 @@
 
 from logging.config import fileConfig
 from nudgeflow.models.follow_up import FollowUp  # noqa: F401
+from nudgeflow.models.user import User  # noqa: F401
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
@@ -8,7 +9,7 @@ from sqlalchemy import engine_from_config, pool
 from nudgeflow.config import settings
 from nudgeflow.database import Base
 
-from nudgeflow.models.contact import Contact  
+from nudgeflow.models.contact import Contact  # noqa: F401
 
 config = context.config
 
