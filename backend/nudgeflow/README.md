@@ -1,6 +1,6 @@
 # NudgeFlow AI
 
-NudgeFlow AI is a WhatsApp-first CRM for small businesses and service providers. This repository currently provides the backend foundation for contact and follow-up management through a FastAPI JSON API. WhatsApp and AI integrations are future milestones.
+NudgeFlow AI is a WhatsApp-first CRM for small businesses and service providers. This repository currently provides a FastAPI backend for contact and follow-up management, plus an approval-gated agent workflow with local intent classification and optional LLM-assisted extraction and draft generation. WhatsApp delivery remains a future milestone.
 
 ## Current capabilities
 
@@ -82,6 +82,12 @@ All list endpoints support `limit` (default 100, range 1–500) and `offset` (de
 | GET | `/follow-ups/{follow_up_id}` | Retrieve one follow-up (404 if missing) |
 | PATCH | `/follow-ups/{follow_up_id}` | Partially update title, notes, due date, or status |
 | DELETE | `/follow-ups/{follow_up_id}` | Delete a follow-up (204) |
+| POST | `/agent/runs` | Create a draft run for an authorized follow-up; awaiting approval (201) |
+| GET | `/agent/runs/{run_id}` | Retrieve tenant-scoped run, execution and audit data |
+| POST | `/agent/runs/{run_id}/approve` | Persist approval and execute the local mock exactly once |
+| POST | `/agent/runs/{run_id}/reject` | Persist rejection; optional reason |
+| POST | `/agent/runs/{run_id}/recover` | Reconcile an expired execution claim without resending |
+| POST | `/agent/runs/{run_id}/execute` | Explicitly resume a run proven not to have invoked its tool |
 
 Example contact request:
 
@@ -106,6 +112,41 @@ Every `/contacts` and `/follow-ups` request requires `Authorization: Bearer <acc
 
 The tenant migration creates one workspace for each existing user and maps contacts with a known `owner_id` to that user's workspace. Ownerless legacy contacts are retained in an isolated `Unassigned legacy records (quarantined)` workspace with no users; their follow-ups inherit the same tenant. They are not visible to authenticated users. An operator must review and explicitly map quarantined records to the correct business before any user is added to that workspace. No records are deleted or assigned to the first user. The migration can be downgraded while restoring the prior globally-unique phone constraint; downgrade stops before schema changes if the same phone number exists in multiple tenants.
 
+## Approval-gated agent workflow (mock execution only)
+
+A small approval-gated backend workflow is available for follow-ups. `POST /agent/runs` accepts `{"follow_up_id": 1}` and optionally `customer_message` (up to 5000 characters). The follow-up and contact are read through a tenant-scoped join. If supplied, the message is classified by the separate local classifier; structured extraction and draft generation use the configured LLM. The classifier taxonomy and prediction remain separate from the extraction. The raw message is not persisted or included in audit events, but is transmitted to the configured provider for extraction and drafting. Without a message, classification and extraction are skipped and the existing follow-up-based deterministic draft is used. Creating or retrieving a run never invokes the tool. No conversation-history model exists, so the workflow does not invent conversation history.
+
+Extraction is validated with a strict Pydantic schema. It contains a concise request summary, requested action, named product/service, the date/time phrase as stated, explicit quantity and budget, up to eight other stated details, and up to eight missing details. Unknown scalar values are `null`; ambiguous time phrases are preserved as text. The extraction is advisory and is stored with an explicit status; malformed or failed output is not persisted as successful extraction. The proposed reply is stored as the run's existing `proposed_message` and plan, with a separate draft status/source (`generated`/`llm` or `fallback`/`deterministic`). All drafts remain proposals in `awaiting_approval` and require the existing explicit approval before the mock can execute.
+
+To enable the optional Groq-compatible provider, configure `NUDGEFLOW_LLM_API_KEY` and `NUDGEFLOW_LLM_MODEL`; both must be present. `NUDGEFLOW_LLM_TIMEOUT_SECONDS` defaults to 15 and is limited to 1–60 seconds. With no provider configuration, on provider errors, or on invalid output, the run still persists with an explicit extraction/draft status and a safe deterministic fallback. The current implementation makes up to two synchronous model requests per supplied message, so request latency includes both calls and provider latency. Automated tests mock the provider and make no external calls. Do not place credentials in source control. Review the provider's data handling terms before sending customer messages.
+
+Review the returned `proposed_message` and `plan`, then call `POST /agent/runs/{run_id}/approve` or `POST /agent/runs/{run_id}/reject` (optionally with `{"reason":"Needs editing"}`). Approval invokes only a registered local mock that performs no network request. A successful mock result is persisted and read back before the run reaches `completed`. A definitive rejection is `failed`; an exception or ambiguous tool result is `outcome_uncertain` and is never automatically retried. `GET /agent/runs/{run_id}` returns the current run, approval decision, execution outcome, and audit events. Other tenants' follow-ups and runs return 404.
+
+`POST /agent/runs/{run_id}/recover` handles an expired execution claim. It uses a PostgreSQL session advisory lock shared with the executor, so recovery cannot reclaim a live tool call even if its lease expires. A stale run with no durable tool-invocation marker becomes `ready_to_execute`; repeated approval stays read-only, and a separate explicit `POST /agent/runs/{run_id}/execute` resumes it. A stale run with the marker becomes `outcome_uncertain`, because the tool may have acted; approval and execute requests return that state without resending. Existing `executing` rows are conservatively backfilled with the invocation marker by migration `a73c9b14d520` because their prior tool-call phase cannot be proven.
+
+Intent classification uses the local `ml/lead_intelligence` environment and saved `intent_classifier_60k` checkpoint. Configure `NUDGEFLOW_INTENT_PYTHON` and `NUDGEFLOW_INTENT_MODEL_PATH` to select another local interpreter/checkpoint. This integration runs local-only inference and never downloads weights. Missing artifacts or inference failures create the run with an explicit `unavailable` or `error` classification and no predicted label. Classification does not authorize or trigger execution; explicit approval remains required. The current checkpoint and available synthetic evaluation do not establish real-world customer-message accuracy. The ML subprocess currently starts per classification request; a production deployment should host model inference in a managed long-lived process. The local classifier, extraction provider, and draft provider are separate steps with separate outputs and failure statuses.
+
+State transitions:
+
+```text
+awaiting_approval -> rejected
+awaiting_approval -> executing -> completed | failed | outcome_uncertain
+expired executing with no invocation marker -> ready_to_execute
+ready_to_execute -> executing (only via explicit /execute)
+expired executing after invocation marker -> outcome_uncertain
+```
+
+The conditional database claim, unique execution row per run, execution token, lease, and PostgreSQL advisory lock prevent duplicate tool invocation by repeated requests and keep recovery from interfering with a live execution. Audit events include recovery decisions and do not copy the proposed message into audit metadata. This workflow is not a WhatsApp integration and does not contact customers.
+
+Apply the schema through the reviewed Alembic process before running the API:
+
+```powershell
+uv run alembic heads
+uv run alembic upgrade head
+```
+
+Review migration `a73c9b14d520` before applying it to any shared environment.
+
 ## Frontend integration
 
 There is no React, TypeScript, or Tailwind application in `frontend/` yet. A future frontend can use `http://127.0.0.1:8000` as its local API base URL, configure that URL through its own environment settings, and allow its exact origin in `NUDGEFLOW_CORS_ORIGINS`. Contact and follow-up response fields are described above and in `/docs`.
@@ -118,21 +159,25 @@ uv run pytest -v
 
 The API tests use isolated in-memory SQLite databases with foreign-key enforcement. They do not require or modify a PostgreSQL database. PostgreSQL connectivity and migration execution should be checked separately against a configured development database.
 
-The tenant migration has an opt-in PostgreSQL integration test at `tests/test_tenant_migration_postgres.py`. It requires `NUDGEFLOW_MIGRATION_TEST_URL` to point to an **empty disposable loopback PostgreSQL database** whose name starts with `nudgeflow_test_`; the test refuses remote, non-PostgreSQL, incorrectly named, or non-empty databases. Set `NUDGEFLOW_DATABASE_URL` to that same test URL before running it. The test upgrades from empty, downgrades only the tenant revision, seeds pre-tenant rows, then upgrades and checks the backfill/quarantine policy. Never point this test at a development or production database.
+The complete PostgreSQL migration chain, recovery lock, and agent classification persistence have opt-in tests. All require a **disposable loopback PostgreSQL database** whose name starts with `nudgeflow_test_`. The migration test additionally requires the database to be empty; it upgrades from empty, exercises extraction/draft and classification downgrade/re-upgrade, checks legacy backfills and recovery markers, rewinds to the pre-tenant revision, seeds legacy rows, and upgrades to the latest head. The agent recovery test checks that a live session advisory lock prevents stale recovery from claiming a run. The classification test checks persisted results, missing input, unavailable inference, and tenant isolation. Never point these tests at a development or production database.
 
-Example for a separately created, disposable local test database:
+For an already-created disposable database:
 
 ```powershell
-$env:NUDGEFLOW_DATABASE_URL = "postgresql+psycopg://postgres@127.0.0.1:5432/nudgeflow_test_tenant"
+$env:NUDGEFLOW_DATABASE_URL = "postgresql+psycopg://postgres@127.0.0.1:5432/nudgeflow_test_agent"
 $env:NUDGEFLOW_MIGRATION_TEST_URL = $env:NUDGEFLOW_DATABASE_URL
-uv run --no-sync python -m pytest -q tests/test_tenant_migration_postgres.py
+$env:NUDGEFLOW_AGENT_TEST_URL = $env:NUDGEFLOW_DATABASE_URL
+uv run --no-sync python -m pytest -q -p no:cacheprovider tests/test_tenant_migration_postgres.py tests/test_agent_recovery_postgres.py tests/test_agent_classification_postgres.py
+uv run --no-sync python -m alembic check
 ```
+
+The migration test leaves its disposable database at the latest schema head. The agent lock test requires that schema to be applied. Neither test creates or drops the database itself.
 
 ## Limitations and next steps
 
 - `/health` reports that the API process is responding; it does not currently check PostgreSQL readiness.
 - Authentication currently uses short-lived bearer tokens without refresh or revocation. Tenant roles are stored, but there is no invitation/member-management flow or role-based authorization policy yet.
-- WhatsApp Cloud API, LLMs, agent workflows, and background processing are not implemented.
+- Real WhatsApp delivery, asynchronous LLM processing, automated recovery scheduling, and background processing are not implemented.
 
 ## Future AI architecture
 

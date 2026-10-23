@@ -1,7 +1,15 @@
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, ForeignKey, ForeignKeyConstraint, String, Text, func
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from nudgeflow.database import Base
@@ -13,6 +21,7 @@ class FollowUp(Base):
 
     __tablename__ = "follow_ups"
     __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_follow_ups_tenant_id_id"),
         CheckConstraint(
             "status IN ('pending', 'completed')",
             name="ck_follow_ups_status",

@@ -1,5 +1,6 @@
 
 from logging.config import fileConfig
+from nudgeflow.models.agent import AgentAuditEvent, AgentExecution, AgentRun  # noqa: F401
 from nudgeflow.models.follow_up import FollowUp  # noqa: F401
 from nudgeflow.models.user import User  # noqa: F401
 

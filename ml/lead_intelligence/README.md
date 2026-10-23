@@ -48,6 +48,16 @@ PyTorch and Hugging Face Transformers are available in the isolated `uv` project
 
 `evaluation.evaluate_intents` provides macro-F1, per-class precision and recall, and a confusion matrix in the fixed taxonomy order. `write_json_report` can save those results under `reports/`. Compare against a simple baseline as a future learning/evaluation goal; its implementation is left to you. No metrics are included in this scaffold.
 
+## Local inference adapter
+
+`lead_intelligence.inference` loads a saved checkpoint and tokenizer from a local path only. For a one-off check, from this directory run:
+
+```powershell
+'Could I book a consultation?' | ConvertTo-Json -Compress | uv run python -m lead_intelligence.inference --model-path .\models\intent_classifier_60k
+```
+
+The backend calls this module through the ML workspace's `.venv` interpreter, keeping PyTorch and Transformers out of backend dependencies. It defaults to the ignored local checkpoint at `models/intent_classifier_60k`; `NUDGEFLOW_INTENT_PYTHON` and `NUDGEFLOW_INTENT_MODEL_PATH` can select local alternatives. It does not download model weights. Checkpoint results have only been explored on synthetic data and must not be treated as evidence of real-world CRM performance.
+
 ## Setup and checks
 
 From `C:\Nudge-Flow\ml\lead_intelligence`:

@@ -7,8 +7,10 @@ from transformers import AutoTokenizer
 from lead_intelligence.model import DEFAULT_MODEL_NAME
 
 
-def load_tokenizer(model_name: str = DEFAULT_MODEL_NAME):
+def load_tokenizer(model_name: str = DEFAULT_MODEL_NAME, *, local_files_only: bool = False):
     """Load the tokenizer associated with a pretrained model."""
+    if local_files_only:
+        return AutoTokenizer.from_pretrained(model_name, local_files_only=True)
     return AutoTokenizer.from_pretrained(model_name)
 
 

@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     )
     jwt_secret_key: SecretStr = SecretStr("")
     access_token_expire_minutes: int = Field(default=30, gt=0, le=1440)
+    llm_api_key: SecretStr = SecretStr("")
+    llm_model: str | None = None
+    llm_timeout_seconds: int = Field(default=15, gt=0, le=60)
 
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
