@@ -192,3 +192,21 @@ Keep deterministic CRM rules in the FastAPI/domain layer. Add AI capabilities be
 ## Contributing
 
 Create a focused feature branch, make a small change with tests, and open a pull request for review. Do not commit `.env`, credentials, local databases, or generated virtual environments. Include migration changes when modifying the database schema.
+
+
+## WhatsApp Cloud API
+
+Messaging uses the mock provider by default. To opt into real sends, configure these environment variables in the backend environment (never commit credentials):
+
+```dotenv
+NUDGEFLOW_WHATSAPP_ENABLED=true
+NUDGEFLOW_WHATSAPP_ACCESS_TOKEN=<your Meta access token>
+NUDGEFLOW_WHATSAPP_PHONE_NUMBER_ID=<your WhatsApp phone number ID>
+NUDGEFLOW_WHATSAPP_API_VERSION=v25.0
+```
+
+The enable flag defaults to `false`; having a token alone does not enable real messaging. When enabled, newly created runs are explicitly bound to the WhatsApp Cloud API tool. Existing approved runs remain bound to their stored tool and are not migrated. The backend sends text messages through `https://graph.facebook.com/{version}/{phone-number-id}/messages`. Do not enable the flag until you have verified the intended recipient and message flow. This project does not send a real message as part of startup or tests.
+
+Run the backend from this directory with `uv sync --dev` followed by `uv run uvicorn nudgeflow.main:app --reload`. Run all tests with `uv run python -m pytest -q`; run workflow tests with `uv run python -m pytest tests/test_agent_workflow.py -q`.
+
+Meta setup still required: create/configure a Meta app with the WhatsApp product, obtain an access token with the required permissions, provision a WhatsApp Business Account and phone number, and add/verify permitted test recipients or production recipients as appropriate. Meta's successful API response and message ID indicate provider acceptance only; they do not confirm delivery. This backend currently has no delivery-status webhook endpoint. A future webhook step must configure a public HTTPS callback in Meta, verify the subscription challenge, validate webhook signatures, and persist status events before the product reports delivery.

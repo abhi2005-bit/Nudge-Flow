@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     llm_model: str | None = None
     llm_timeout_seconds: int = Field(default=15, gt=0, le=60)
 
+    whatsapp_enabled: bool = False
+    whatsapp_access_token: SecretStr = SecretStr("")
+    whatsapp_phone_number_id: str | None = None
+    whatsapp_api_version: str = "v25.0"
+
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
         if self.environment == "production":

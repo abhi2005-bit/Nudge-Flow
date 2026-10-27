@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
+from nudgeflow.config import settings
 from nudgeflow.models.agent import AgentAuditEvent, AgentExecution, AgentRun
 from nudgeflow.models.contact import Contact
 from nudgeflow.models.follow_up import FollowUp
@@ -209,6 +210,7 @@ def start_run(
     follow_up, contact = context
     authorized_follow_up_id = follow_up.id
     contact_name = contact.name
+
     follow_up_title = follow_up.title
     # Do not keep a database transaction/connection open while cold-loading ML
     # dependencies and the local model after the tenant-scoped access check.
@@ -270,11 +272,12 @@ def start_run(
                 draft_error_code="message_preparation_failed",
             )
     message = content_result.draft_text
+    selected_tool = "whatsapp_cloud_api" if settings.whatsapp_enabled else MOCK_TOOL_NAME
     plan = AgentPlanResponse(
         follow_up_id=authorized_follow_up_id,
         intended_action="send_follow_up_message",
         message=message,
-        tool_name=MOCK_TOOL_NAME,
+        tool_name=selected_tool,
     )
     run = AgentRun(
         tenant_id=user.tenant_id,
@@ -310,7 +313,7 @@ def start_run(
         action="run_created",
         details={
             "status": "awaiting_approval",
-            "tool_name": MOCK_TOOL_NAME,
+            "tool_name": selected_tool,
             "intent_classification_status": classification["status"],
             "message_extraction_status": content_result.extraction_status,
             "draft_status": content_result.draft_status,
@@ -454,7 +457,8 @@ def _valid_stored_result(result_json: str, run_id: int) -> bool:
         return False
     return (
         isinstance(result, dict)
-        and result.get("provider") == "mock"
+        and isinstance(result.get("provider"), str)
+        and result.get("provider") in {"mock", "whatsapp_cloud_api"}
         and result.get("run_id") == run_id
         and result.get("accepted") is True
         and isinstance(result.get("message_id"), str)
@@ -578,6 +582,40 @@ def _invoke_claimed_run(
             db.commit()
             return retrieve_run(db, user=user, run_id=run_id)
 
+        context = db.execute(
+            select(FollowUp, Contact)
+            .join(
+                Contact,
+                (Contact.id == FollowUp.contact_id)
+                & (Contact.tenant_id == FollowUp.tenant_id),
+            )
+            .where(
+                FollowUp.id == run.follow_up_id,
+                FollowUp.tenant_id == user.tenant_id,
+                Contact.tenant_id == user.tenant_id,
+            )
+        ).first()
+
+        if context is None or not context[1].phone_number:
+            return _persist_execution(
+                db,
+                run_id=run_id,
+                tenant_id=user.tenant_id,
+                actor_user_id=user.id,
+                token=token,
+                result={
+                    "provider": run.tool_name,
+                    "run_id": run_id,
+                    "accepted": False,
+                },
+                execution_status="failed",
+                run_status="failed",
+                error_code="recipient_not_found",
+            )
+
+        _, contact = context
+        recipient_phone = contact.phone_number
+
         tool = TOOL_REGISTRY.get(run.tool_name)
         if tool is None:
             run.status = "ready_to_execute"
@@ -610,7 +648,11 @@ def _invoke_claimed_run(
         db.commit()
 
         try:
-            result_payload = tool.send(run_id=run.id, message=run.proposed_message)
+            result_payload = tool.send(
+                run_id=run.id,
+                message=run.proposed_message,
+                recipient_phone=recipient_phone,
+            )
         except Exception as exc:
             return _persist_execution(
                 db,
@@ -627,7 +669,6 @@ def _invoke_claimed_run(
         safe_result = _safe_tool_result(result_payload, run_id)
         if (
             isinstance(result_payload, dict)
-            and result_payload.get("provider") == "mock"
             and result_payload.get("accepted") is False
         ):
             return _persist_execution(
@@ -671,7 +712,8 @@ def _invoke_claimed_run(
 def _valid_tool_result(payload: Any, run_id: int) -> bool:
     return (
         isinstance(payload, dict)
-        and payload.get("provider") == "mock"
+        and isinstance(payload.get("provider"), str)
+        and payload.get("provider") in {"mock", "whatsapp_cloud_api"}
         and payload.get("run_id") == run_id
         and payload.get("accepted") is True
         and isinstance(payload.get("message_id"), str)
@@ -680,9 +722,14 @@ def _valid_tool_result(payload: Any, run_id: int) -> bool:
 
 def _safe_tool_result(payload: Any, run_id: int) -> dict[str, Any]:
     if not isinstance(payload, dict):
-        return {"provider": "mock", "run_id": run_id, "accepted": None}
+        return {"provider": "unknown", "run_id": run_id, "accepted": None}
     return {
-        "provider": payload.get("provider") if isinstance(payload.get("provider"), str) else "unknown",
+        "provider": (
+            payload.get("provider")
+            if isinstance(payload.get("provider"), str)
+            and payload.get("provider") in {"mock", "whatsapp_cloud_api"}
+            else "unknown"
+        ),
         "run_id": payload.get("run_id") if isinstance(payload.get("run_id"), int) else run_id,
         "message_id": payload.get("message_id") if isinstance(payload.get("message_id"), str) else None,
         "accepted": payload.get("accepted") if isinstance(payload.get("accepted"), bool) else None,

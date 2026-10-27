@@ -18,6 +18,7 @@ def test_jwt_secret(monkeypatch):
         "jwt_secret_key",
         SecretStr("local-test-secret-that-is-at-least-32-characters"),
     )
+    monkeypatch.setattr(settings, "whatsapp_enabled", False)
 
 
 @pytest.fixture

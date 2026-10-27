@@ -36,12 +36,21 @@ class CountingTool:
         self.result_factory = result_factory
         self.error = error
 
-    def send(self, *, run_id, message):
-        self.calls.append((run_id, message))
+    def send(
+        self,
+        *,
+        run_id: int,
+        message: str,
+        recipient_phone: str,
+    ) -> dict[str, object]:
+        self.calls.append((run_id, message, recipient_phone))
+
         if self.error:
             raise self.error
+
         if self.result_factory:
             return self.result_factory(run_id, message)
+
         return {
             "provider": "mock",
             "message_id": f"mock-{run_id}",
@@ -86,7 +95,7 @@ def test_run_persists_draft_awaiting_approval_without_sending(client, monkeypatc
 
 
 def test_approval_executes_mock_once_and_records_verified_result(client, monkeypatch):
-    _, follow_up = create_follow_up(client)
+    contact, follow_up = create_follow_up(client)
     tool = CountingTool()
     register_tool(monkeypatch, tool)
     run = start_run(client, follow_up["id"]).json()
@@ -100,6 +109,10 @@ def test_approval_executes_mock_once_and_records_verified_result(client, monkeyp
     assert data["execution"]["status"] == "succeeded"
     assert data["execution"]["verified"] is True
     assert data["execution"]["result"]["message_id"] == f"mock-{run['id']}"
+    assert tool.calls[0][2] == contact["phone_number"]
+    audit_json = str(data["audit"])
+    assert contact["phone_number"] not in audit_json
+    assert data["proposed_message"] not in audit_json
     assert [event["action"] for event in data["audit"]] == [
         "run_created",
         "approval_granted",
@@ -427,4 +440,60 @@ def test_definitive_tool_rejection_is_failed_and_not_retried(client, monkeypatch
     assert first.json()["status"] == repeated.json()["status"] == "failed"
     assert first.json()["execution"]["status"] == "failed"
     assert first.json()["execution"]["verified"] is False
+    assert len(tool.calls) == 1
+
+
+def test_missing_recipient_at_execution_fails_without_invoking_tool(
+    client, db_session, monkeypatch
+):
+    from nudgeflow.models.contact import Contact
+
+    contact_data, follow_up = create_follow_up(client)
+    tool = CountingTool()
+    register_tool(monkeypatch, tool)
+    run = start_run(client, follow_up["id"]).json()
+    contact = db_session.get(Contact, contact_data["id"])
+    contact.phone_number = ""
+    db_session.commit()
+
+    response = client.post(f"/agent/runs/{run['id']}/approve")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["execution"]["error_code"] == "recipient_not_found"
+    assert tool.calls == []
+
+
+def test_whatsapp_provider_acceptance_is_recorded_without_delivery_claim(
+    client, monkeypatch
+):
+    from nudgeflow.config import settings
+    from nudgeflow.services.agent.tools import TOOL_REGISTRY
+
+    _, follow_up = create_follow_up(client)
+    tool = CountingTool(
+        result_factory=lambda run_id, _message: {
+            "provider": "whatsapp_cloud_api",
+            "message_id": "wamid.mocked",
+            "run_id": run_id,
+            "accepted": True,
+        }
+    )
+    monkeypatch.setattr(settings, "whatsapp_enabled", True)
+    monkeypatch.setitem(TOOL_REGISTRY, "whatsapp_cloud_api", tool)
+    run = start_run(client, follow_up["id"]).json()
+
+    assert run["tool_name"] == "whatsapp_cloud_api"
+    response = client.post(f"/agent/runs/{run['id']}/approve")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "completed"
+    assert data["execution"]["result"] == {
+        "provider": "whatsapp_cloud_api",
+        "message_id": "wamid.mocked",
+        "run_id": run["id"],
+        "accepted": True,
+    }
+    assert data["execution"]["verified"] is True
     assert len(tool.calls) == 1

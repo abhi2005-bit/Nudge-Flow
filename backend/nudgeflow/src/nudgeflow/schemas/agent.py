@@ -46,7 +46,7 @@ class AgentPlanResponse(BaseModel):
     follow_up_id: int
     intended_action: Literal["send_follow_up_message"]
     message: str
-    tool_name: Literal["mock_messaging"]
+    tool_name: Literal["mock_messaging", "whatsapp_cloud_api"]
 
 
 class AgentExecutionResponse(BaseModel):
