@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from nudgeflow.routers.auth import router as auth_router
 from nudgeflow.routers.agent import router as agent_router
 
+from nudgeflow.bootstrap import agent_lifespan
 from nudgeflow.config import settings
 from nudgeflow.database import get_db
 from nudgeflow.dependencies import get_current_user
@@ -19,10 +20,19 @@ from nudgeflow.schemas.follow_up import (
     FollowUpUpdate,
 )
 
+from fastapi.responses import JSONResponse
+
+
+class UTF8JSONResponse(JSONResponse):
+    media_type = "application/json; charset=utf-8"
+
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     debug=settings.debug,
+    lifespan=agent_lifespan,
+    default_response_class=UTF8JSONResponse,
 )
 app.include_router(auth_router)
 app.include_router(agent_router)

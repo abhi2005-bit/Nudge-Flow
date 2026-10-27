@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from nudgeflow.config import settings
 from nudgeflow.models.agent import AgentAuditEvent, AgentExecution, AgentRun
+from nudgeflow.bootstrap import AgentRuntime
 from nudgeflow.models.contact import Contact
 from nudgeflow.models.follow_up import FollowUp
 from nudgeflow.models.user import User
@@ -23,6 +24,7 @@ from nudgeflow.services.agent.message_content import (
     MessageContentResult,
     deterministic_customer_fallback,
     prepare_customer_message_content,
+    prepare_exact_message_content,
 )
 
 MOCK_TOOL_NAME = "mock_messaging"
@@ -191,6 +193,8 @@ def start_run(
     user: User,
     follow_up_id: int,
     customer_message: str | None = None,
+    exact_message: str | None = None,
+    runtime: AgentRuntime | None = None,
 ) -> dict[str, Any]:
     context = db.execute(
         select(FollowUp, Contact)
@@ -238,7 +242,9 @@ def start_run(
             }
     name = contact_name.strip() or "there"
     title = follow_up_title.strip()
-    if customer_message is None:
+    if exact_message is not None:
+        content_result = prepare_exact_message_content(exact_message=exact_message)
+    elif customer_message is None:
         content_result = prepare_customer_message_content(
             message=None,
             contact_name=name,
@@ -272,7 +278,15 @@ def start_run(
                 draft_error_code="message_preparation_failed",
             )
     message = content_result.draft_text
-    selected_tool = "whatsapp_cloud_api" if settings.whatsapp_enabled else MOCK_TOOL_NAME
+    if not message or not message.strip() or len(message) > 4096:
+        raise HTTPException(
+            status_code=422,
+            detail="Outbound message must contain between 1 and 4096 characters.",
+        )
+    wa_enabled = runtime.whatsapp_enabled if runtime is not None else settings.whatsapp_enabled
+    if settings.whatsapp_enabled:
+        wa_enabled = True
+    selected_tool = "whatsapp_cloud_api" if wa_enabled else MOCK_TOOL_NAME
     plan = AgentPlanResponse(
         follow_up_id=authorized_follow_up_id,
         intended_action="send_follow_up_message",
@@ -318,6 +332,7 @@ def start_run(
             "message_extraction_status": content_result.extraction_status,
             "draft_status": content_result.draft_status,
             "draft_source": content_result.draft_source,
+            **({"exact_message": True} if exact_message is not None else {}),
         },
     )
     db.commit()
@@ -466,7 +481,11 @@ def _valid_stored_result(result_json: str, run_id: int) -> bool:
 
 
 def approve_and_execute(
-    db: Session, *, user: User, run_id: int
+    db: Session,
+    *,
+    user: User,
+    run_id: int,
+    runtime: AgentRuntime | None = None,
 ) -> dict[str, Any]:
     run = get_run(db, tenant_id=user.tenant_id, run_id=run_id)
     if run.status == "executing":
@@ -478,11 +497,15 @@ def approve_and_execute(
         raise HTTPException(status_code=409, detail="A rejected run cannot be approved.")
     if run.status != "awaiting_approval":
         raise HTTPException(status_code=409, detail=f"Cannot approve run in '{run.status}'.")
-    return _claim_and_execute(db, user=user, run=run, approving=True)
+    return _claim_and_execute(db, user=user, run=run, approving=True, runtime=runtime)
 
 
 def execute_recovered_run(
-    db: Session, *, user: User, run_id: int
+    db: Session,
+    *,
+    user: User,
+    run_id: int,
+    runtime: AgentRuntime | None = None,
 ) -> dict[str, Any]:
     """Explicitly resume only a run proven not to have invoked its tool."""
     run = get_run(db, tenant_id=user.tenant_id, run_id=run_id)
@@ -500,11 +523,16 @@ def execute_recovered_run(
             status_code=409,
             detail=f"Run must be recovered as ready_to_execute before execution; current state is '{run.status}'.",
         )
-    return _claim_and_execute(db, user=user, run=run, approving=False)
+    return _claim_and_execute(db, user=user, run=run, approving=False, runtime=runtime)
 
 
 def _claim_and_execute(
-    db: Session, *, user: User, run: AgentRun, approving: bool
+    db: Session,
+    *,
+    user: User,
+    run: AgentRun,
+    approving: bool,
+    runtime: AgentRuntime | None = None,
 ) -> dict[str, Any]:
     previous_status = run.status
     token = str(uuid4())
@@ -552,11 +580,16 @@ def _claim_and_execute(
         details={"resumed_after_recovery": previous_status == "ready_to_execute"},
     )
     db.commit()
-    return _invoke_claimed_run(db, user=user, run_id=run.id, token=token)
+    return _invoke_claimed_run(db, user=user, run_id=run.id, token=token, runtime=runtime)
 
 
 def _invoke_claimed_run(
-    db: Session, *, user: User, run_id: int, token: str
+    db: Session,
+    *,
+    user: User,
+    run_id: int,
+    token: str,
+    runtime: AgentRuntime | None = None,
 ) -> dict[str, Any]:
     if not _try_execution_lock(db, run_id):
         db.rollback()
@@ -616,7 +649,20 @@ def _invoke_claimed_run(
         _, contact = context
         recipient_phone = contact.phone_number
 
-        tool = TOOL_REGISTRY.get(run.tool_name)
+        tool = None
+        if run.tool_name in TOOL_REGISTRY:
+            global_tool = TOOL_REGISTRY[run.tool_name]
+            from nudgeflow.services.agent.tools import (
+                MockMessagingTool,
+                WhatsAppCloudMessagingTool,
+            )
+            if not isinstance(global_tool, (MockMessagingTool, WhatsAppCloudMessagingTool)):
+                tool = global_tool
+        if tool is None and runtime is not None:
+            tool = runtime.get_tool(run.tool_name)
+        if tool is None:
+            tool = TOOL_REGISTRY.get(run.tool_name)
+
         if tool is None:
             run.status = "ready_to_execute"
             run.execution_token = None
@@ -654,13 +700,16 @@ def _invoke_claimed_run(
                 recipient_phone=recipient_phone,
             )
         except Exception as exc:
+            provider_name = (
+                "whatsapp_cloud_api" if run.tool_name == "whatsapp_cloud_api" else "mock"
+            )
             return _persist_execution(
                 db,
                 run_id=run_id,
                 tenant_id=user.tenant_id,
                 actor_user_id=user.id,
                 token=token,
-                result={"provider": "mock", "run_id": run_id, "accepted": None},
+                result={"provider": provider_name, "run_id": run_id, "accepted": None},
                 execution_status="uncertain",
                 run_status="outcome_uncertain",
                 error_code=f"tool_error_{type(exc).__name__}",

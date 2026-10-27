@@ -19,6 +19,7 @@ backend/nudgeflow/
   migrations/                 Alembic environment and revisions
   src/nudgeflow/
     main.py                   FastAPI application and routes
+    bootstrap.py              Agent runtime bootstrap and lifespan
     config.py                 Environment-backed settings
     database.py               SQLAlchemy engine, base, and session dependency
     dependencies.py           Bearer-token verification and current-user lookup
@@ -27,11 +28,49 @@ backend/nudgeflow/
     tokens.py                 JWT signing and verification
     models/                   SQLAlchemy models
     schemas/                  Pydantic request and response schemas
-  tests/                      Isolated pytest suite
+    services/agent/           Workflow, tools, classifier, LLM client
+  tests/                      Isolated pytest suite (includes test_bootstrap.py)
 frontend/                     Reserved; no frontend application exists yet
 ```
 
-## Requirements and local setup
+## Bootstrap sequence
+
+On startup, `nudgeflow.bootstrap.agent_lifespan` (wired into FastAPI's
+`lifespan` parameter) performs the following steps synchronously before
+handling any request:
+
+1. **Validate configuration** — checks that all required settings have safe
+   values.  No external API calls are made.  If `NUDGEFLOW_WHATSAPP_ENABLED`
+   is `true`, both the access token and phone-number ID must be present.
+2. **Assemble the tool registry** — constructs a `MockMessagingTool` instance
+   and, if WhatsApp is enabled, a `WhatsAppCloudMessagingTool` instance.  Each
+   bootstrap call produces fresh instances for test isolation.
+3. **Validate tool contracts** — asserts that every tool in the registry
+   exposes a string `name` attribute that matches its registry key and a
+   callable `send` method.
+4. **Store the runtime** — saves the immutable `AgentRuntime` dataclass on
+   `app.state.agent_runtime`, where it remains available to routes via the
+   `get_agent_runtime` FastAPI dependency.
+5. **Fail safely** — if any step raises `BootstrapError` the exception
+   propagates and the server does not start.  No pending runs are executed and
+   no messages are sent during bootstrap.
+
+On shutdown, the lifespan removes `agent_runtime` from `app.state`.
+
+WhatsApp sending is disabled by default (`NUDGEFLOW_WHATSAPP_ENABLED=false`).
+Bootstrap never enables it automatically, never executes pending runs, and
+never sends messages.
+
+### Running the application
+
+```powershell
+Copy-Item .env.example .env
+# Edit .env: set NUDGEFLOW_DATABASE_URL and NUDGEFLOW_JWT_SECRET_KEY
+uv sync --dev
+uv run alembic upgrade head
+uv run uvicorn nudgeflow.main:app --reload
+```
+
 
 - Python 3.11 or newer
 - [`uv`](https://docs.astral.sh/uv/)
@@ -114,7 +153,7 @@ The tenant migration creates one workspace for each existing user and maps conta
 
 ## Approval-gated agent workflow (mock execution only)
 
-A small approval-gated backend workflow is available for follow-ups. `POST /agent/runs` accepts `{"follow_up_id": 1}` and optionally `customer_message` (up to 5000 characters). The follow-up and contact are read through a tenant-scoped join. If supplied, the message is classified by the separate local classifier; structured extraction and draft generation use the configured LLM. The classifier taxonomy and prediction remain separate from the extraction. The raw message is not persisted or included in audit events, but is transmitted to the configured provider for extraction and drafting. Without a message, classification and extraction are skipped and the existing follow-up-based deterministic draft is used. Creating or retrieving a run never invokes the tool. No conversation-history model exists, so the workflow does not invent conversation history.
+A small approval-gated backend workflow is available for follow-ups. `POST /agent/runs` accepts `{"follow_up_id": 1}`, optionally `customer_message` (up to 5000 characters), and optionally `exact_message` (up to 4096 characters). When `exact_message` is provided, LLM extraction and draft generation are bypassed, setting the proposed draft directly to the supplied exact message while maintaining strict approval gating. The follow-up and contact are read through a tenant-scoped join. If `customer_message` is supplied, the message is classified by the separate local classifier; structured extraction and draft generation use the configured LLM unless `exact_message` is specified. The classifier taxonomy and prediction remain separate from the extraction. The raw message is not persisted or included in audit events, but is transmitted to the configured provider for extraction and drafting. Without an explicit or customer message, classification and extraction are skipped and the existing follow-up-based deterministic draft is used. Creating or retrieving a run never invokes the tool. No conversation-history model exists, so the workflow does not invent conversation history.
 
 Extraction is validated with a strict Pydantic schema. It contains a concise request summary, requested action, named product/service, the date/time phrase as stated, explicit quantity and budget, up to eight other stated details, and up to eight missing details. Unknown scalar values are `null`; ambiguous time phrases are preserved as text. The extraction is advisory and is stored with an explicit status; malformed or failed output is not persisted as successful extraction. The proposed reply is stored as the run's existing `proposed_message` and plan, with a separate draft status/source (`generated`/`llm` or `fallback`/`deterministic`). All drafts remain proposals in `awaiting_approval` and require the existing explicit approval before the mock can execute.
 

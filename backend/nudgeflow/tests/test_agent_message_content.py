@@ -2,6 +2,8 @@ import json
 from datetime import datetime, timedelta, timezone
 import uuid
 
+import pytest
+
 
 def create_follow_up(client):
     contact = client.post(
@@ -342,3 +344,417 @@ def test_draft_is_only_a_proposal_and_never_executes_tool(client, monkeypatch):
     assert response.json()["status"] == "awaiting_approval"
     assert response.json()["draft"]["source"] == "llm"
     assert calls == []
+
+
+def test_llm_authentication_failure_regression(client, monkeypatch):
+    """When the LLM provider returns 401/403, run creation falls back safely without failing."""
+    from nudgeflow.services.agent import workflow
+    from nudgeflow.services.agent.llm_client import LLMProviderError
+
+    _, follow_up = create_follow_up(client)
+    stub_classifier(monkeypatch)
+    llm = FakeLLM(LLMProviderError("provider_authentication_failed"))
+    monkeypatch.setattr(workflow, "get_llm_client", lambda: llm)
+
+    response = client.post(
+        "/agent/runs",
+        json={"follow_up_id": follow_up["id"], "customer_message": "Hello, need pricing"},
+    )
+
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["status"] == "awaiting_approval"
+    assert data["approval_decision"] is None
+    assert data["execution"] is None
+    assert data["message_extraction"] == {
+        "status": "failed",
+        "data": None,
+        "error_code": "provider_authentication_failed",
+    }
+    assert data["draft"] == {
+        "status": "fallback",
+        "source": "deterministic",
+        "error_code": "extraction_failed",
+    }
+    assert "thanks for reaching out" in data["proposed_message"]
+
+
+def test_exact_message_bypasses_llm_and_is_approval_gated(client, monkeypatch):
+    """Developers can specify exact_message, which completely bypasses the LLM and waits for approval."""
+    from nudgeflow.services.agent import workflow
+
+    _, follow_up = create_follow_up(client)
+    stub_classifier(monkeypatch)
+
+    class ExplosiveLLM:
+        def complete_json(self, **kwargs):
+            raise AssertionError("LLM should not be called when exact_message is provided.")
+
+    monkeypatch.setattr(workflow, "get_llm_client", lambda: ExplosiveLLM())
+
+    exact_text = "Hello! This is an authorized exact message for integration verification."
+    response = client.post(
+        "/agent/runs",
+        json={
+            "follow_up_id": follow_up["id"],
+            "exact_message": exact_text,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["status"] == "awaiting_approval"
+    assert data["approval_decision"] is None
+    assert data["execution"] is None
+    assert data["proposed_message"] == exact_text
+    assert data["plan"]["message"] == exact_text
+    assert data["message_extraction"]["status"] == "not_performed"
+    assert data["draft"]["status"] == "fallback"
+    assert data["draft"]["source"] == "deterministic"
+    assert data["draft"]["error_code"] is None
+    audit_events = data["audit"]
+    assert audit_events[0]["action"] == "run_created"
+    assert audit_events[0]["details"]["exact_message"] is True
+
+
+def test_exact_message_with_customer_message_classifies_intent_and_uses_exact_draft(
+    client, monkeypatch
+):
+    from nudgeflow.services.agent import workflow
+
+    _, follow_up = create_follow_up(client)
+    stub_classifier(monkeypatch)
+
+    class ExplosiveLLM:
+        def complete_json(self, **kwargs):
+            raise AssertionError("LLM should not be called when exact_message is provided.")
+
+    monkeypatch.setattr(workflow, "get_llm_client", lambda: ExplosiveLLM())
+
+    response = client.post(
+        "/agent/runs",
+        json={
+            "follow_up_id": follow_up["id"],
+            "customer_message": "Can I cancel my appointment?",
+            "exact_message": "Your appointment has been cancelled as requested.",
+        },
+    )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["status"] == "awaiting_approval"
+    assert data["intent_classification"]["status"] == "classified"
+    assert data["proposed_message"] == "Your appointment has been cancelled as requested."
+    assert data["draft"]["source"] == "deterministic"
+
+
+def test_exact_message_validation_blank_or_too_long(client):
+    _, follow_up = create_follow_up(client)
+
+    # Blank message rejected
+    blank_resp = client.post(
+        "/agent/runs",
+        json={"follow_up_id": follow_up["id"], "exact_message": "   "},
+    )
+    assert blank_resp.status_code == 422
+
+    # Message exceeding 4096 characters rejected
+    too_long_resp = client.post(
+        "/agent/runs",
+        json={"follow_up_id": follow_up["id"], "exact_message": "A" * 4097},
+    )
+    assert too_long_resp.status_code == 422
+
+
+def test_groq_client_integration_with_workflow(client, monkeypatch):
+    """Workflow successfully uses GroqChatClient with mocked HTTP to extract and draft."""
+    from nudgeflow.config import settings
+    from nudgeflow.services.agent import workflow
+    from nudgeflow.services.agent.llm_client import GroqChatClient
+
+    _, follow_up = create_follow_up(client)
+    stub_classifier(monkeypatch)
+
+    extraction_json = extraction_payload()
+    draft_json = json.dumps({"message": "Hi Mira, thanks for inquiring. Let's discuss details."})
+
+    responses = [
+        json.dumps({"choices": [{"message": {"content": extraction_json}}]}).encode("utf-8"),
+        json.dumps({"choices": [{"message": {"content": draft_json}}]}).encode("utf-8"),
+    ]
+    calls = []
+
+    class MockResponse:
+        def __init__(self, data):
+            self.data = data
+
+        def read(self, n=-1):
+            return self.data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout):
+        calls.append((req, timeout))
+        return MockResponse(responses.pop(0))
+
+    monkeypatch.setattr("nudgeflow.services.agent.llm_client.urlopen", fake_urlopen)
+
+    groq_client = GroqChatClient(
+        api_key="mock-groq-key",
+        model="openai/gpt-oss-20b",
+        timeout_seconds=15,
+        user_agent=f"NudgeFlow/{settings.app_version}",
+    )
+    monkeypatch.setattr(workflow, "get_llm_client", lambda: groq_client)
+
+    response = client.post(
+        "/agent/runs",
+        json={
+            "follow_up_id": follow_up["id"],
+            "customer_message": "Can you provide consultation next Friday?",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["message_extraction"]["status"] == "completed"
+    assert data["draft"]["status"] == "generated"
+    assert data["draft"]["source"] == "llm"
+    assert data["draft"]["error_code"] is None
+    assert data["proposed_message"] == "Hi Mira, thanks for inquiring. Let's discuss details."
+    assert len(calls) == 2
+    assert calls[0][0].get_header("User-agent") == f"NudgeFlow/{settings.app_version}"
+    assert calls[0][0].get_header("Authorization") == "Bearer mock-groq-key"
+
+
+def test_llm_permission_denied_regression(client, monkeypatch):
+    """When the LLM provider returns 403, run creation falls back safely without failing."""
+    from nudgeflow.services.agent import workflow
+    from nudgeflow.services.agent.llm_client import LLMProviderError
+
+    _, follow_up = create_follow_up(client)
+    stub_classifier(monkeypatch)
+    llm = FakeLLM(LLMProviderError("provider_permission_denied"))
+    monkeypatch.setattr(workflow, "get_llm_client", lambda: llm)
+
+    response = client.post(
+        "/agent/runs",
+        json={"follow_up_id": follow_up["id"], "customer_message": "Hello, need pricing"},
+    )
+
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["status"] == "awaiting_approval"
+    assert data["message_extraction"] == {
+        "status": "failed",
+        "data": None,
+        "error_code": "provider_permission_denied",
+    }
+    assert data["draft"] == {
+        "status": "fallback",
+        "source": "deterministic",
+        "error_code": "extraction_failed",
+    }
+
+
+def test_llm_model_not_found_regression(client, monkeypatch):
+    """When the LLM provider returns 404 (e.g. invalid model), fallback is used safely."""
+    from nudgeflow.services.agent import workflow
+    from nudgeflow.services.agent.llm_client import LLMProviderError
+
+    _, follow_up = create_follow_up(client)
+    stub_classifier(monkeypatch)
+    llm = FakeLLM(LLMProviderError("provider_model_not_found"))
+    monkeypatch.setattr(workflow, "get_llm_client", lambda: llm)
+
+    response = client.post(
+        "/agent/runs",
+        json={"follow_up_id": follow_up["id"], "customer_message": "Hello, need pricing"},
+    )
+
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["status"] == "awaiting_approval"
+    assert data["message_extraction"] == {
+        "status": "failed",
+        "data": None,
+        "error_code": "provider_model_not_found",
+    }
+    assert data["draft"] == {
+        "status": "fallback",
+        "source": "deterministic",
+        "error_code": "extraction_failed",
+    }
+
+
+def test_unicode_apostrophes_and_characters_preservation(client, monkeypatch):
+    """UTF-8 text (curly apostrophes, accents, symbols) is preserved in storage and JSON serialization."""
+    from nudgeflow.services.agent import workflow
+
+    _, follow_up = create_follow_up(client)
+    stub_classifier(monkeypatch)
+
+    unicode_text = "Hi Mira, you’re welcome to visit our café! We’ll reserve ₹500 credit for you. ✨"
+    llm = FakeLLM(
+        extraction_payload(),
+        json.dumps({"message": unicode_text}, ensure_ascii=False),
+    )
+    monkeypatch.setattr(workflow, "get_llm_client", lambda: llm)
+
+    response = client.post(
+        "/agent/runs",
+        json={
+            "follow_up_id": follow_up["id"],
+            "customer_message": "Can I visit your café next week?",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    # Verify Content-Type explicitly declares charset=utf-8
+    assert response.headers["content-type"] == "application/json; charset=utf-8"
+    data = response.json()
+    assert data["proposed_message"] == unicode_text
+    assert "you’re" in data["proposed_message"]
+    assert "café" in data["proposed_message"]
+    assert "₹500" in data["proposed_message"]
+    assert "✨" in data["proposed_message"]
+
+
+def test_whitespace_and_spacing_normalization():
+    """Draft normalization strips zero-width chars, fixes punctuation spacing, and repairs joined words."""
+    from nudgeflow.services.agent.message_content import DraftMessageOutput
+
+    # Zero-width spaces and non-breaking spaces
+    raw_with_zw = "Hi Mira,\u200b thanks for reaching\u00a0out.\ufeff We are happy to help."
+    cleaned = DraftMessageOutput.model_validate({"message": raw_with_zw}).message
+    assert cleaned == "Hi Mira, thanks for reaching out. We are happy to help."
+    assert "\u200b" not in cleaned
+    assert "\ufeff" not in cleaned
+    assert "\u00a0" not in cleaned
+
+    # Punctuation immediately touching a word (e.g. ?Once -> ? Once)
+    raw_punctuation = "works for you?Once we have that, we can help.Thanks!"
+    cleaned_punc = DraftMessageOutput.model_validate({"message": raw_punctuation}).message
+    assert cleaned_punc == "works for you? Once we have that, we can help. Thanks!"
+
+    # Token boundary repair (e.g. Oncewe -> Once we)
+    raw_oncewe = "works for you? Oncewe have that, we will share availability."
+    cleaned_oncewe = DraftMessageOutput.model_validate({"message": raw_oncewe}).message
+    assert cleaned_oncewe == "works for you? Once we have that, we will share availability."
+    assert "Oncewe" not in cleaned_oncewe
+
+    # Multi-space collapse
+    raw_spaces = "Hi Mira,    thanks   for reaching out!   "
+    cleaned_spaces = DraftMessageOutput.model_validate({"message": raw_spaces}).message
+    assert cleaned_spaces == "Hi Mira, thanks for reaching out!"
+
+
+@pytest.mark.parametrize(
+    "malformed_draft",
+    [
+        json.dumps({"message": ""}),
+        json.dumps({"message": "    "}),
+        json.dumps({"message": 12345}),
+        json.dumps({"wrong_field": "Hello"}),
+        json.dumps({"message": "Valid text", "extra_forbidden": True}),
+        "not json at all",
+    ],
+)
+def test_malformed_llm_draft_outputs_fallback_safely(client, monkeypatch, malformed_draft):
+    """Malformed or invalid LLM draft outputs safely fall back to deterministic response."""
+    from nudgeflow.services.agent import workflow
+
+    _, follow_up = create_follow_up(client)
+    stub_classifier(monkeypatch)
+
+    llm = FakeLLM(
+        extraction_payload(),
+        malformed_draft,
+    )
+    monkeypatch.setattr(workflow, "get_llm_client", lambda: llm)
+
+    response = client.post(
+        "/agent/runs",
+        json={
+            "follow_up_id": follow_up["id"],
+            "customer_message": "Need information please.",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["status"] == "awaiting_approval"
+    assert data["message_extraction"]["status"] == "completed"
+    assert data["draft"]["status"] == "fallback"
+    assert data["draft"]["source"] == "deterministic"
+    assert data["draft"]["error_code"] in {"invalid_draft_output", "draft_generation_failed"}
+    assert "thanks for reaching out" in data["proposed_message"]
+
+
+def test_pricing_and_availability_enquiry_drafting(client, monkeypatch):
+    """Pricing and availability enquiry asks for missing service and date/time details politely."""
+    from nudgeflow.services.agent import workflow
+
+    _, follow_up = create_follow_up(client)
+    stub_classifier(monkeypatch)
+
+    customer_message = "Hi! Can you let me know your pricing and available slots next week?"
+    extraction = extraction_payload(
+        request_summary="Ask about pricing and availability next week",
+        requested_action="request pricing and availability",
+        product_or_service=None,
+        date_or_time_mentioned="next week",
+        missing_information=["product_or_service", "specific_date_or_time"],
+    )
+    draft_message = (
+        "Hi Mira, thanks for reaching out! Could you let us know which service or product "
+        "you’re interested in and the specific day or time next week that works for you? "
+        "Once we have that, we can share pricing and availability. Thanks!"
+    )
+
+    llm = FakeLLM(
+        extraction,
+        json.dumps({"message": draft_message}, ensure_ascii=False),
+    )
+    monkeypatch.setattr(workflow, "get_llm_client", lambda: llm)
+
+    response = client.post(
+        "/agent/runs",
+        json={
+            "follow_up_id": follow_up["id"],
+            "customer_message": customer_message,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.headers["content-type"] == "application/json; charset=utf-8"
+    data = response.json()
+
+    # Verify run remains in safe awaiting_approval state
+    assert data["status"] == "awaiting_approval"
+    assert data["approval_decision"] is None
+    assert data["execution"] is None
+
+    # Verify extraction identified missing details
+    assert data["message_extraction"]["status"] == "completed"
+    assert data["message_extraction"]["data"]["missing_information"] == [
+        "product_or_service",
+        "specific_date_or_time",
+    ]
+
+    # Verify draft output
+    assert data["draft"]["status"] == "generated"
+    assert data["draft"]["source"] == "llm"
+    assert data["draft"]["error_code"] is None
+
+    # Verify quality, spacing, and Unicode preservation
+    proposed = data["proposed_message"]
+    assert "you’re" in proposed
+    assert "Once we" in proposed
+    assert "Oncewe" not in proposed
+    assert "which service or product" in proposed
+    assert "pricing and availability" in proposed

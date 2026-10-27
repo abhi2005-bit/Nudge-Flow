@@ -170,3 +170,146 @@ def test_invalid_payload_is_rejected_before_network(monkeypatch, message, phone)
     )
     with pytest.raises(ValueError):
         WhatsAppCloudMessagingTool().send(run_id=1, message=message, recipient_phone=phone)
+
+
+def test_whatsapp_exact_message_end_to_end_mocked(client, monkeypatch):
+    """WhatsApp end-to-end integration with mocked provider using exact_message."""
+    from nudgeflow.bootstrap import build_agent_runtime, get_agent_runtime
+    from nudgeflow.main import app
+
+    configured(monkeypatch, enabled=True)
+    runtime = build_agent_runtime(settings)
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+
+    calls = []
+    fake_client = FakeClient(
+        response=FakeResponse(200, {"messages": [{"id": "wamid.mock_approved_send"}]}),
+        calls=calls,
+    )
+    monkeypatch.setattr(
+        "nudgeflow.services.agent.tools.httpx.Client",
+        lambda **kwargs: fake_client,
+    )
+
+    try:
+        # Create contact with test phone number
+        contact_resp = client.post(
+            "/contacts",
+            json={"name": "Abhijit Test", "phone_number": "+919876503955"},
+        )
+        assert contact_resp.status_code == 201
+        contact = contact_resp.json()
+
+        # Create follow-up
+        follow_up_resp = client.post(
+            "/follow-ups",
+            json={
+                "contact_id": contact["id"],
+                "title": "the integration verification task",
+                "notes": "Verify single exact message send.",
+                "due_at": "2026-10-30T10:00:00Z",
+            },
+        )
+        assert follow_up_resp.status_code == 201
+        follow_up = follow_up_resp.json()
+
+        # Step 1: Create run with exact_message - MUST be awaiting_approval and MUST NOT send
+        exact_text = "Hello Abhijit, this is a verified WhatsApp Cloud API integration test message."
+        run_resp = client.post(
+            "/agent/runs",
+            json={
+                "follow_up_id": follow_up["id"],
+                "exact_message": exact_text,
+            },
+        )
+        assert run_resp.status_code == 201, run_resp.text
+        run = run_resp.json()
+        assert run["status"] == "awaiting_approval"
+        assert run["tool_name"] == "whatsapp_cloud_api"
+        assert run["proposed_message"] == exact_text
+        assert run["approval_decision"] is None
+        assert run["execution"] is None
+        # Verify NO network call was made prior to explicit approval
+        assert len(calls) == 0
+
+        # Step 2: Explicit human approval executes the tool
+        approve_resp = client.post(f"/agent/runs/{run['id']}/approve")
+        assert approve_resp.status_code == 200, approve_resp.text
+        approved_data = approve_resp.json()
+        assert approved_data["status"] == "completed"
+        assert approved_data["approval_decision"] == "approved"
+        assert approved_data["execution"]["verified"] is True
+        assert approved_data["execution"]["tool_name"] == "whatsapp_cloud_api"
+        assert approved_data["execution"]["result"]["provider"] == "whatsapp_cloud_api"
+        assert approved_data["execution"]["result"]["message_id"] == "wamid.mock_approved_send"
+
+        # Verify exact request parameters sent to provider
+        assert len(calls) == 1
+        url, headers, payload = calls[0]
+        assert "v25.0/1234567890/messages" in url
+        assert payload["to"] == "919876503955"  # stripped +
+        assert payload["text"]["body"] == exact_text
+
+        # Step 3: Repeated approval is idempotent and does not send duplicate
+        again_resp = client.post(f"/agent/runs/{run['id']}/approve")
+        assert again_resp.status_code == 200
+        assert again_resp.json()["status"] == "completed"
+        assert len(calls) == 1  # Still 1, no duplicate
+    finally:
+        app.dependency_overrides.pop(get_agent_runtime, None)
+
+
+def test_whatsapp_uncertain_outcome_preserves_provider_name(client, monkeypatch):
+    """When WhatsApp tool fails with an uncertain outcome, execution.result records whatsapp_cloud_api provider."""
+    from nudgeflow.bootstrap import build_agent_runtime, get_agent_runtime
+    from nudgeflow.main import app
+
+    configured(monkeypatch, enabled=True)
+    runtime = build_agent_runtime(settings)
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+
+    monkeypatch.setattr(
+        "nudgeflow.services.agent.tools.httpx.Client",
+        lambda **kwargs: FakeClient(
+            error=httpx.ConnectTimeout("Network connection timeout during send"),
+        ),
+    )
+
+    try:
+        contact_resp = client.post(
+            "/contacts",
+            json={"name": "Timeout Test", "phone_number": "+919876503955"},
+        )
+        assert contact_resp.status_code == 201
+        contact = contact_resp.json()
+
+        follow_up_resp = client.post(
+            "/follow-ups",
+            json={
+                "contact_id": contact["id"],
+                "title": "the timeout test",
+                "due_at": "2026-10-30T10:00:00Z",
+            },
+        )
+        assert follow_up_resp.status_code == 201
+        follow_up = follow_up_resp.json()
+
+        run_resp = client.post(
+            "/agent/runs",
+            json={
+                "follow_up_id": follow_up["id"],
+                "exact_message": "Timeout test message",
+            },
+        )
+        assert run_resp.status_code == 201
+        run = run_resp.json()
+
+        approve_resp = client.post(f"/agent/runs/{run['id']}/approve")
+        assert approve_resp.status_code == 200
+        data = approve_resp.json()
+        assert data["status"] == "outcome_uncertain"
+        assert data["execution"]["status"] == "uncertain"
+        assert data["execution"]["result"]["provider"] == "whatsapp_cloud_api"
+        assert data["execution"]["error_code"] == "tool_error_ConnectTimeout"
+    finally:
+        app.dependency_overrides.pop(get_agent_runtime, None)

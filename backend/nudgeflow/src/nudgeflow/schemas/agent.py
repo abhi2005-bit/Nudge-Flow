@@ -29,12 +29,23 @@ AgentRunStatus = Literal[
 class AgentRunCreate(BaseModel):
     follow_up_id: int = Field(gt=0)
     customer_message: str | None = Field(default=None, max_length=5000)
+    exact_message: str | None = Field(default=None, max_length=4096)
 
     @field_validator("customer_message")
     @classmethod
     def validate_customer_message(cls, value: str | None) -> str | None:
         if value is not None and not value.strip():
             raise ValueError("customer_message must not be blank.")
+        return value
+
+    @field_validator("exact_message")
+    @classmethod
+    def validate_exact_message(cls, value: str | None) -> str | None:
+        if value is not None:
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("exact_message must not be blank.")
+            return stripped
         return value
 
 
