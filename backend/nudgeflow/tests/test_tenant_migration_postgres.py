@@ -15,8 +15,9 @@ from nudgeflow.config import settings
 
 
 MIGRATION_TEST_URL = os.environ.get("NUDGEFLOW_MIGRATION_TEST_URL")
-LATEST_REVISION = "f6b7d3e2a910"
+LATEST_REVISION = "3fdcb2bdf867"
 PRE_TENANT_REVISION = "b6c81e94d172"
+
 
 
 @pytest.mark.skipif(
@@ -55,6 +56,11 @@ def test_empty_upgrade_and_legacy_backfill_on_disposable_postgres(monkeypatch):
         assert {"agent_runs", "agent_executions", "agent_audit_events"}.issubset(
             set(inspector.get_table_names())
         )
+        assert {
+            "whatsapp_business_channels",
+            "whatsapp_conversations",
+            "whatsapp_inbound_messages",
+        }.issubset(set(inspector.get_table_names()))
         run_columns = {column["name"] for column in inspector.get_columns("agent_runs")}
         assert {
             "execution_token",
@@ -116,6 +122,39 @@ def test_empty_upgrade_and_legacy_backfill_on_disposable_postgres(monkeypatch):
         assert any(
             constraint["name"] == "uq_contacts_tenant_phone"
             for constraint in inspector.get_unique_constraints("contacts")
+        )
+        conversation_fks = {
+            foreign_key["name"]: foreign_key
+            for foreign_key in inspector.get_foreign_keys("whatsapp_conversations")
+        }
+        assert conversation_fks[
+            "fk_whatsapp_conversations_tenant_contact"
+        ]["constrained_columns"] == ["tenant_id", "contact_id"]
+        assert conversation_fks[
+            "fk_whatsapp_conversations_tenant_contact"
+        ]["referred_columns"] == ["tenant_id", "id"]
+        assert conversation_fks[
+            "fk_whatsapp_conversations_tenant_contact"
+        ]["options"]["ondelete"] == "RESTRICT"
+        inbound_fks = {
+            foreign_key["name"]: foreign_key
+            for foreign_key in inspector.get_foreign_keys("whatsapp_inbound_messages")
+        }
+        assert inbound_fks[
+            "fk_whatsapp_inbound_messages_tenant_contact"
+        ]["constrained_columns"] == ["tenant_id", "contact_id"]
+        assert inbound_fks[
+            "fk_whatsapp_inbound_messages_tenant_contact"
+        ]["referred_columns"] == ["tenant_id", "id"]
+        assert inbound_fks[
+            "fk_whatsapp_inbound_messages_tenant_channel_conversation"
+        ]["constrained_columns"] == ["tenant_id", "channel_id", "conversation_id"]
+        assert inbound_fks[
+            "fk_whatsapp_inbound_messages_tenant_channel_conversation"
+        ]["referred_columns"] == ["tenant_id", "channel_id", "id"]
+        assert any(
+            constraint["name"] == "uq_whatsapp_conversations_tenant_channel_id_id"
+            for constraint in inspector.get_unique_constraints("whatsapp_conversations")
         )
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == LATEST_REVISION

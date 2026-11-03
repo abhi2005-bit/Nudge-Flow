@@ -313,3 +313,214 @@ def test_whatsapp_uncertain_outcome_preserves_provider_name(client, monkeypatch)
         assert data["execution"]["error_code"] == "tool_error_ConnectTimeout"
     finally:
         app.dependency_overrides.pop(get_agent_runtime, None)
+
+
+def test_provider_rejection_extracts_structured_diagnostics(monkeypatch):
+    configured(monkeypatch)
+    calls = []
+    error_payload = {
+        "error": {
+            "message": "(#131030) Recipient phone number not in allowed list: +919876543210 with secret token EAAQxxx",
+            "type": "OAuthException",
+            "code": 131030,
+            "error_subcode": 2494010,
+            "fbtrace_id": "secret-fbtrace-12345",
+        }
+    }
+    monkeypatch.setattr(
+        "nudgeflow.services.agent.tools.httpx.Client",
+        lambda **kwargs: FakeClient(
+            response=FakeResponse(400, error_payload),
+            calls=calls,
+            **kwargs,
+        ),
+    )
+    result = WhatsAppCloudMessagingTool().send(
+        run_id=5, message="test message", recipient_phone="+919876543210"
+    )
+    assert result["accepted"] is False
+    assert result["message_id"] is None
+    assert result["run_id"] == 5
+    assert result["provider"] == "whatsapp_cloud_api"
+    assert result["provider_error"] == {
+        "http_status": 400,
+        "code": 131030,
+        "subcode": 2494010,
+        "type": "OAuthException",
+    }
+    # Sensitive data exclusion:
+    assert "secret" not in repr(result)
+    assert "EAAQ" not in repr(result)
+    assert "919876543210" not in repr(result)
+    assert "fbtrace" not in repr(result)
+    assert "allowed list" not in repr(result)
+
+
+def test_provider_rejection_handles_malformed_json(monkeypatch):
+    configured(monkeypatch)
+    calls = []
+
+    class MalformedResponse:
+        status_code = 400
+
+        def json(self):
+            raise ValueError("Invalid JSON response from gateway")
+
+    monkeypatch.setattr(
+        "nudgeflow.services.agent.tools.httpx.Client",
+        lambda **kwargs: FakeClient(
+            response=MalformedResponse(),
+            calls=calls,
+            **kwargs,
+        ),
+    )
+    result = WhatsAppCloudMessagingTool().send(
+        run_id=6, message="test message", recipient_phone="+919876543210"
+    )
+    assert result["accepted"] is False
+    assert result["message_id"] is None
+    assert result["provider_error"] == {"http_status": 400}
+
+
+def test_provider_rejection_handles_missing_fields_and_unexpected_types(monkeypatch):
+    configured(monkeypatch)
+    calls = []
+    weird_body = {
+        "error": {
+            "code": "not-an-int",
+            "error_subcode": True,  # bool should not be accepted as int
+            "type": 999,  # int should not be accepted as string
+        }
+    }
+    monkeypatch.setattr(
+        "nudgeflow.services.agent.tools.httpx.Client",
+        lambda **kwargs: FakeClient(
+            response=FakeResponse(403, weird_body),
+            calls=calls,
+            **kwargs,
+        ),
+    )
+    result = WhatsAppCloudMessagingTool().send(
+        run_id=7, message="test message", recipient_phone="+919876543210"
+    )
+    assert result["accepted"] is False
+    assert result["message_id"] is None
+    # Code, subcode, and type were invalid types, so only http_status is retained
+    assert result["provider_error"] == {"http_status": 403}
+
+
+def test_safe_tool_result_preserves_allowlisted_provider_error_and_excludes_secrets():
+    from nudgeflow.services.agent.workflow import _safe_tool_result
+
+    raw_payload = {
+        "provider": "whatsapp_cloud_api",
+        "run_id": 42,
+        "accepted": False,
+        "message_id": None,
+        "provider_error": {
+            "http_status": 400,
+            "code": 131047,
+            "subcode": 463,
+            "type": "OAuthException",
+            "raw_message": "Sensitive customer text or secret credentials",
+            "access_token": "EAAQ_secret_token",
+            "recipient_phone": "+919876543210",
+        },
+        "extra_untrusted_key": "injected_secret",
+    }
+    safe = _safe_tool_result(raw_payload, run_id=42)
+    assert safe == {
+        "provider": "whatsapp_cloud_api",
+        "run_id": 42,
+        "message_id": None,
+        "accepted": False,
+        "provider_error": {
+            "http_status": 400,
+            "code": 131047,
+            "subcode": 463,
+            "type": "OAuthException",
+        },
+    }
+    assert "Sensitive" not in repr(safe)
+    assert "secret" not in repr(safe)
+    assert "919876543210" not in repr(safe)
+    assert "injected" not in repr(safe)
+
+
+def test_whatsapp_rejection_end_to_end_persists_safe_diagnostics(client, monkeypatch):
+    """WhatsApp end-to-end integration with provider rejection storing safe diagnostics."""
+    from nudgeflow.bootstrap import build_agent_runtime, get_agent_runtime
+    from nudgeflow.main import app
+
+    configured(monkeypatch, enabled=True)
+    runtime = build_agent_runtime(settings)
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+
+    calls = []
+    fake_client = FakeClient(
+        response=FakeResponse(
+            400,
+            {
+                "error": {
+                    "code": 131030,
+                    "error_subcode": 2494010,
+                    "type": "OAuthException",
+                    "message": "Recipient phone not in test list: +919876503955",
+                }
+            },
+        ),
+        calls=calls,
+    )
+    monkeypatch.setattr(
+        "nudgeflow.services.agent.tools.httpx.Client",
+        lambda **kwargs: fake_client,
+    )
+
+    try:
+        contact_resp = client.post(
+            "/contacts",
+            json={"name": "Rejection Test Contact", "phone_number": "+919876503955"},
+        )
+        assert contact_resp.status_code == 201
+        contact = contact_resp.json()
+
+        fu_resp = client.post(
+            "/follow-ups",
+            json={
+                "contact_id": contact["id"],
+                "title": "Rejection follow-up",
+                "due_at": "2026-10-29T10:00:00Z",
+            },
+        )
+        assert fu_resp.status_code == 201
+        follow_up = fu_resp.json()
+
+        run_resp = client.post(
+            "/agent/runs",
+            json={
+                "follow_up_id": follow_up["id"],
+                "exact_message": "Safe diagnostics test message",
+            },
+        )
+        assert run_resp.status_code == 201
+        run = run_resp.json()
+
+        approve_resp = client.post(f"/agent/runs/{run['id']}/approve")
+        assert approve_resp.status_code == 200
+        data = approve_resp.json()
+        assert data["status"] == "failed"
+        assert data["execution"]["status"] == "failed"
+        assert data["execution"]["error_code"] == "tool_not_accepted"
+        assert data["execution"]["result"]["provider"] == "whatsapp_cloud_api"
+        assert data["execution"]["result"]["accepted"] is False
+        assert data["execution"]["result"]["provider_error"] == {
+            "http_status": 400,
+            "code": 131030,
+            "subcode": 2494010,
+            "type": "OAuthException",
+        }
+        # Verify sanitization of client response:
+        assert "919876503955" not in repr(data["execution"]["result"])
+        assert "not in test list" not in repr(data["execution"]["result"])
+    finally:
+        app.dependency_overrides.pop(get_agent_runtime, None)

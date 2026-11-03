@@ -1,11 +1,12 @@
-"""Messaging tools with an opt-in WhatsApp Cloud API implementation."""
-
+import logging
 import re
 from typing import Protocol
 
 import httpx
 
 from nudgeflow.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class MessagingTool(Protocol):
@@ -90,13 +91,44 @@ class WhatsAppCloudMessagingTool:
             )
 
         if 400 <= response.status_code < 500:
-            # A provider error response is a definitive rejection. Never surface its
-            # body because it may contain request data or provider diagnostics.
+            provider_error: dict[str, object] = {"http_status": response.status_code}
+            try:
+                raw_body = response.json()
+                if isinstance(raw_body, dict):
+                    err = raw_body.get("error")
+                    if isinstance(err, dict):
+                        code = err.get("code")
+                        if isinstance(code, int) and not isinstance(code, bool):
+                            provider_error["code"] = code
+                        subcode = (
+                            err.get("error_subcode")
+                            if err.get("error_subcode") is not None
+                            else err.get("subcode")
+                        )
+                        if isinstance(subcode, int) and not isinstance(subcode, bool):
+                            provider_error["subcode"] = subcode
+                        err_type = err.get("type")
+                        if isinstance(err_type, str):
+                            provider_error["type"] = err_type
+            except Exception:
+                pass
+
+            logger.warning(
+                "WhatsApp Cloud API rejected send for run %s: HTTP %s (code=%s, subcode=%s, type=%s)",
+                run_id,
+                response.status_code,
+                provider_error.get("code"),
+                provider_error.get("subcode"),
+                provider_error.get("type"),
+            )
+
+            # Return only allowlisted diagnostic fields; never surface raw body or user data.
             return {
                 "provider": self.name,
                 "message_id": None,
                 "run_id": run_id,
                 "accepted": False,
+                "provider_error": provider_error,
             }
         if not 200 <= response.status_code < 300:
             raise WhatsAppOutcomeUncertainError("WhatsApp provider outcome is uncertain.")

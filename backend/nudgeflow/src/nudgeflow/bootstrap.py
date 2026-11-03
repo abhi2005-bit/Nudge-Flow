@@ -34,9 +34,9 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
+
 # Errors
-# ---------------------------------------------------------------------------
+
 
 class BootstrapError(RuntimeError):
     """Raised when the agent runtime cannot be assembled safely."""
@@ -50,9 +50,9 @@ class ToolContractError(BootstrapError):
     """Raised when a registered tool violates the MessagingTool contract."""
 
 
-# ---------------------------------------------------------------------------
+
 # Runtime object
-# ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class AgentRuntime:
@@ -66,9 +66,9 @@ class AgentRuntime:
         return self.tool_registry.get(name)
 
 
-# ---------------------------------------------------------------------------
+
 # Validation helpers
-# ---------------------------------------------------------------------------
+
 
 def _validate_tool_contract(tool: object, registry_key: str) -> None:
     """Verify that *tool* satisfies the MessagingTool structural protocol."""
@@ -112,9 +112,9 @@ def _validate_config(cfg: Settings) -> None:
             )
 
 
-# ---------------------------------------------------------------------------
+
 # Factory
-# ---------------------------------------------------------------------------
+
 
 def build_agent_runtime(cfg: Settings | None = None) -> AgentRuntime:
     """Construct and validate the agent runtime from *cfg*.
@@ -165,9 +165,9 @@ def build_agent_runtime(cfg: Settings | None = None) -> AgentRuntime:
     )
 
 
-# ---------------------------------------------------------------------------
+
 # FastAPI lifespan
-# ---------------------------------------------------------------------------
+
 
 @asynccontextmanager
 async def agent_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -191,9 +191,9 @@ async def agent_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             del app.state.agent_runtime
 
 
-# ---------------------------------------------------------------------------
+
 # FastAPI dependency
-# ---------------------------------------------------------------------------
+
 
 def get_agent_runtime(request: Request) -> AgentRuntime:
     """FastAPI dependency that retrieves the runtime from app.state.

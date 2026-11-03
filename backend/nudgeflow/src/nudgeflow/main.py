@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from nudgeflow.routers.auth import router as auth_router
 from nudgeflow.routers.agent import router as agent_router
+from nudgeflow.routers.webhooks import router as webhooks_router
 
 from nudgeflow.bootstrap import agent_lifespan
 from nudgeflow.config import settings
@@ -36,6 +37,7 @@ app = FastAPI(
 )
 app.include_router(auth_router)
 app.include_router(agent_router)
+app.include_router(webhooks_router)
 
 app.add_middleware(
     CORSMiddleware,

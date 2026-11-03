@@ -772,7 +772,7 @@ def _valid_tool_result(payload: Any, run_id: int) -> bool:
 def _safe_tool_result(payload: Any, run_id: int) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {"provider": "unknown", "run_id": run_id, "accepted": None}
-    return {
+    safe: dict[str, Any] = {
         "provider": (
             payload.get("provider")
             if isinstance(payload.get("provider"), str)
@@ -783,6 +783,24 @@ def _safe_tool_result(payload: Any, run_id: int) -> dict[str, Any]:
         "message_id": payload.get("message_id") if isinstance(payload.get("message_id"), str) else None,
         "accepted": payload.get("accepted") if isinstance(payload.get("accepted"), bool) else None,
     }
+    provider_error = payload.get("provider_error")
+    if isinstance(provider_error, dict):
+        safe_error: dict[str, Any] = {}
+        http_status = provider_error.get("http_status")
+        if isinstance(http_status, int) and not isinstance(http_status, bool):
+            safe_error["http_status"] = http_status
+        code = provider_error.get("code")
+        if isinstance(code, int) and not isinstance(code, bool):
+            safe_error["code"] = code
+        subcode = provider_error.get("subcode")
+        if isinstance(subcode, int) and not isinstance(subcode, bool):
+            safe_error["subcode"] = subcode
+        err_type = provider_error.get("type")
+        if isinstance(err_type, str):
+            safe_error["type"] = err_type
+        if safe_error:
+            safe["provider_error"] = safe_error
+    return safe
 
 
 def _persist_execution(

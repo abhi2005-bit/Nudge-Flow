@@ -1,4 +1,5 @@
 
+from nudgeflow.models.types import UTCDateTime
 from logging.config import fileConfig
 from nudgeflow.models.agent import AgentAuditEvent, AgentExecution, AgentRun  # noqa: F401
 from nudgeflow.models.follow_up import FollowUp  # noqa: F401
@@ -11,6 +12,11 @@ from nudgeflow.config import settings
 from nudgeflow.database import Base
 
 from nudgeflow.models.contact import Contact  # noqa: F401
+from nudgeflow.models.webhook import WhatsAppWebhookEvent  # noqa: F401
+
+from nudgeflow.models.whatsapp_channel import WhatsAppBusinessChannel  # noqa: F401
+from nudgeflow.models.conversation import WhatsAppConversation  # noqa: F401
+from nudgeflow.models.inbound_message import WhatsAppInboundMessage  # noqa: F401
 
 config = context.config
 

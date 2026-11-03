@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     whatsapp_access_token: SecretStr = SecretStr("")
     whatsapp_phone_number_id: str | None = None
     whatsapp_api_version: str = "v25.0"
+    whatsapp_webhook_verify_token: SecretStr = SecretStr("")
+    whatsapp_app_secret: SecretStr = SecretStr("")
 
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
@@ -48,5 +50,23 @@ class Settings(BaseSettings):
         if "*" in self.cors_origins:
             raise ValueError("NUDGEFLOW_CORS_ORIGINS must not contain a wildcard.")
         return self
+
+
+def validate_whatsapp_webhook_config(cfg: Settings) -> None:
+    """Validate WhatsApp webhook settings.
+
+    Raises ValueError if verify token or app secret are missing or empty.
+    """
+    verify_token = cfg.whatsapp_webhook_verify_token.get_secret_value().strip()
+    app_secret = cfg.whatsapp_app_secret.get_secret_value().strip()
+    if not verify_token:
+        raise ValueError(
+            "NUDGEFLOW_WHATSAPP_WEBHOOK_VERIFY_TOKEN is missing or empty."
+        )
+    if not app_secret:
+        raise ValueError(
+            "NUDGEFLOW_WHATSAPP_APP_SECRET is missing or empty."
+        )
+
 
 settings = Settings()
